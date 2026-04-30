@@ -160,8 +160,8 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
     [.[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] as $uses
     | ([.[] | select(.type=="user") | .message.content[]? | select(.type=="tool_result") | .tool_use_id] | unique) as $done
     | [
-        ([$uses[] | select(.name=="Task")] | length),
-        ([$uses[] | select(.name=="Task" and .input.run_in_background==true) | select((.id) as $i | ($done | index($i)) | not)] | length),
+        ([$uses[] | select(.name=="Task" or .name=="Agent")] | length),
+        ([$uses[] | select((.name=="Task" or .name=="Agent") and .input.run_in_background==true) | select((.id) as $i | ($done | index($i)) | not)] | length),
         ([$uses[] | select(.name=="Skill") | .input.skill] | unique | length)
       ] | @tsv
   ' "$transcript" 2>/dev/null)
