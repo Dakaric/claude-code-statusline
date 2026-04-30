@@ -1,3 +1,5 @@
+<img width="2028" height="180" alt="CleanShot 2026-05-01 at 01 19 48@2x" src="https://github.com/user-attachments/assets/27b27fc1-4bd6-4c21-98de-9ad9a8aa973a" />
+
 # claude-code-statusline
 
 A drop-in status line for [Claude Code](https://claude.ai/code) with everything you actually want to see at a glance: working directory, git branch, model, context usage with a progress bar, rate limits — and a live count of the sub-agents and skills you're using in the current session.
