@@ -44,6 +44,7 @@ C_WARN='\033[91m'       # helles Rot   – Warnung
 C_SEP='\033[2;37m'      # Dim-Weiß     – Trennzeichen
 C_AGT='\033[94m'        # helles Blau   – Sub-Agents
 C_SKL='\033[35m'        # Magenta       – Skills
+C_CACHE='\033[36m'      # Cyan          – Prompt-Cache TTL
 
 SEP=" ${C_SEP}|${RESET} "
 
@@ -199,6 +200,12 @@ if [ "${skl_avail:-0}" -gt 0 ] 2>/dev/null; then
   seg_skl="${C_SKL}skl ${skl_used}/${skl_avail}${RESET}"
 fi
 
+# --- Segment Prompt-Cache TTL (1h wenn ENABLE_PROMPT_CACHING_1H gesetzt, sonst 5m) ---
+case "${ENABLE_PROMPT_CACHING_1H:-}" in
+  1|true|TRUE) seg_cache="${C_CACHE}cache 1h${RESET}" ;;
+  *)           seg_cache="${C_CACHE}cache 5m${RESET}" ;;
+esac
+
 # --- Segment 6: Vim-Mode ---
 seg_vim=""
 if [ -n "$vim_mode" ]; then
@@ -215,6 +222,7 @@ line="${seg_dir}"
 [ -n "$seg_weekly_opus" ] && line="${line}${SEP}${seg_weekly_opus}"
 [ -n "$seg_agt"        ] && line="${line}${SEP}${seg_agt}"
 [ -n "$seg_skl"        ] && line="${line}${SEP}${seg_skl}"
+[ -n "$seg_cache"      ] && line="${line}${SEP}${seg_cache}"
 [ -n "$seg_vim"        ] && line="${line}${SEP}${seg_vim}"
 
 printf "%b" "$line"
