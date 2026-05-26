@@ -22,11 +22,13 @@ used_tok=$(echo "$input" | jq -r '
      + ($u.cache_creation_input_tokens // 0)
      + ($u.cache_read_input_tokens // 0)) as $sum
   | if $sum > 0 then $sum else empty end')
-five_h=$(echo "$input"       | jq -r '.rate_limits.five_hour.used_percentage // empty')
+# In jq runden (Werte kommen als Float wie 7.000000000000001) -> bash-printf sieht nie
+# einen Dezimalpunkt, der im deutschen Locale als "invalid number" -> 0 enden würde.
+five_h=$(echo "$input"       | jq -r '(.rate_limits.five_hour.used_percentage // empty) | round')
 # weekly/weekly_opus tragen je nach CLI-Version unter wechselnden Keys den echten Wert
 # (z.B. weekly=0 neben seven_day=7) -> Maximum der vorhandenen Werte statt blinder Vorrang.
-weekly=$(echo "$input"       | jq -r '[.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage] | map(select(type=="number")) | max // empty')
-weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage] | map(select(type=="number")) | max // empty')
+weekly=$(echo "$input"       | jq -r '[.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage] | map(select(type=="number")) | max | values | round')
+weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage] | map(select(type=="number")) | max | values | round')
 vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 
@@ -122,7 +124,7 @@ if [ -n "$used_tok" ]; then
   used_fmt=$(fmt_tok "$used_tok")
   total_fmt=$(fmt_tok "$total_tok")
   pct="${used_pct:-0}"
-  pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo 0)
+  pct_int=$(LC_NUMERIC=C printf '%.0f' "$pct" 2>/dev/null || echo 0)
   col=$(pct_color "$pct_int")
   bar=$(make_bar "$pct_int")
   if [ -n "$total_fmt" ]; then
@@ -135,7 +137,7 @@ fi
 # --- Segment 5: 5h-Rate-Limit (immer wenn vorhanden) ---
 seg_rate=""
 if [ -n "$five_h" ]; then
-  rate_val=$(printf '%.0f' "$five_h")
+  rate_val=$(LC_NUMERIC=C printf '%.0f' "$five_h")
   col=$(pct_color "$rate_val")
   seg_rate="${col}5h ${rate_val}%${RESET}"
 fi
@@ -143,7 +145,7 @@ fi
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
 seg_weekly=""
 if [ -n "$weekly" ]; then
-  w_val=$(printf '%.0f' "$weekly")
+  w_val=$(LC_NUMERIC=C printf '%.0f' "$weekly")
   col=$(pct_color "$w_val")
   seg_weekly="${col}wk ${w_val}%${RESET}"
 fi
@@ -151,7 +153,7 @@ fi
 # --- Segment 5c: Weekly-Opus-Rate-Limit (falls vorhanden) ---
 seg_weekly_opus=""
 if [ -n "$weekly_opus" ]; then
-  wo_val=$(printf '%.0f' "$weekly_opus")
+  wo_val=$(LC_NUMERIC=C printf '%.0f' "$weekly_opus")
   col=$(pct_color "$wo_val")
   seg_weekly_opus="${col}wk-opus ${wo_val}%${RESET}"
 fi
