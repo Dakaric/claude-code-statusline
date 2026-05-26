@@ -23,8 +23,10 @@ used_tok=$(echo "$input" | jq -r '
      + ($u.cache_read_input_tokens // 0)) as $sum
   | if $sum > 0 then $sum else empty end')
 five_h=$(echo "$input"       | jq -r '.rate_limits.five_hour.used_percentage // empty')
-weekly=$(echo "$input"       | jq -r '.rate_limits.weekly.used_percentage // .rate_limits.seven_day.used_percentage // empty')
-weekly_opus=$(echo "$input"  | jq -r '.rate_limits.weekly_opus.used_percentage // empty')
+# weekly/weekly_opus tragen je nach CLI-Version unter wechselnden Keys den echten Wert
+# (z.B. weekly=0 neben seven_day=7) -> Maximum der vorhandenen Werte statt blinder Vorrang.
+weekly=$(echo "$input"       | jq -r '[.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage] | map(select(type=="number")) | max // empty')
+weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage] | map(select(type=="number")) | max // empty')
 vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 
