@@ -4,6 +4,11 @@
 
 input=$(cat)
 
+# Jarvis-Cockpit: rate_limits-Snapshot rausschreiben. Das Agent-SDK liefert die
+# Auslastung nicht, nur dieser Statusline-Payload hat sie -> Jarvis liest die Datei.
+echo "$input" | jq -c '{rate_limits: (.rate_limits // {}), captured_at: now}' \
+  > ~/.claude/jarvis-rate-limits.json 2>/dev/null
+
 # --- Daten aus JSON ---
 cwd=$(echo "$input"          | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input"        | jq -r '.model.display_name // ""')
