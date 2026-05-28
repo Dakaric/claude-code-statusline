@@ -226,13 +226,13 @@ fi
 # --- Statusline zusammensetzen ---
 line="${seg_dir}"
 [ -n "$seg_git"   ] && line="${line}${SEP}${seg_git}"
-[ -n "$seg_model" ] && line="${line}${SEP}${seg_model}"
+[ -n "$seg_agt"        ] && line="${line}${SEP}${seg_agt}"
+[ -n "$seg_skl"        ] && line="${line}${SEP}${seg_skl}"
 [ -n "$seg_ctx"        ] && line="${line}${SEP}${seg_ctx}"
 [ -n "$seg_rate"       ] && line="${line}${SEP}${seg_rate}"
 [ -n "$seg_weekly"     ] && line="${line}${SEP}${seg_weekly}"
 [ -n "$seg_weekly_opus" ] && line="${line}${SEP}${seg_weekly_opus}"
-[ -n "$seg_agt"        ] && line="${line}${SEP}${seg_agt}"
-[ -n "$seg_skl"        ] && line="${line}${SEP}${seg_skl}"
+[ -n "$seg_model" ] && line="${line}${SEP}${seg_model}"
 [ -n "$seg_cache"      ] && line="${line}${SEP}${seg_cache}"
 [ -n "$seg_vim"        ] && line="${line}${SEP}${seg_vim}"
 
