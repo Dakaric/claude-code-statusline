@@ -158,8 +158,9 @@ if [ -n "$weekly_opus" ]; then
   seg_weekly_opus="${col}wk-opus ${wo_val}%${RESET}"
 fi
 
-# --- Segment Agents/Skills (used / available) ---
-# Used: Task- bzw. Skill-Aufrufe aus dem aktuellen Transcript.
+# --- Segment Agents/Skills (in-flight / available) ---
+# In-flight: tool_use-Aufrufe ohne passendes tool_result -> idle = 0.
+#            agt_bg = laufende run_in_background-Tasks (Teilmenge von agt_used).
 # Available: alle installierten Sub-Agents und Skills (5-Min-Cache, weil teuer).
 seg_agt=""
 seg_skl=""
@@ -169,10 +170,11 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
   counts=$(jq -rs '
     [.[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] as $uses
     | ([.[] | select(.type=="user") | .message.content[]? | select(.type=="tool_result") | .tool_use_id] | unique) as $done
+    | ([$uses[] | select((.id) as $i | ($done | index($i)) | not)]) as $inflight
     | [
-        ([$uses[] | select(.name=="Task" or .name=="Agent")] | length),
-        ([$uses[] | select((.name=="Task" or .name=="Agent") and .input.run_in_background==true) | select((.id) as $i | ($done | index($i)) | not)] | length),
-        ([$uses[] | select(.name=="Skill") | .input.skill] | unique | length)
+        ([$inflight[] | select(.name=="Task" or .name=="Agent")] | length),
+        ([$inflight[] | select((.name=="Task" or .name=="Agent") and .input.run_in_background==true)] | length),
+        ([$inflight[] | select(.name=="Skill")] | length)
       ] | @tsv
   ' "$transcript" 2>/dev/null)
   [ -n "$counts" ] && IFS=$'\t' read -r agt_used agt_bg skl_used <<< "$counts"
