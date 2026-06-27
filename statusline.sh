@@ -25,10 +25,14 @@ used_tok=$(echo "$input" | jq -r '
 # In jq runden (Werte kommen als Float wie 7.000000000000001) -> bash-printf sieht nie
 # einen Dezimalpunkt, der im deutschen Locale als "invalid number" -> 0 enden würde.
 five_h=$(echo "$input"       | jq -r '(.rate_limits.five_hour.used_percentage // empty) | round')
+# Reset-Zeitstempel des 5h-Limits (Epoch) -> verbleibende Restzeit als Countdown
+five_h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 # weekly/weekly_opus tragen je nach CLI-Version unter wechselnden Keys den echten Wert
 # (z.B. weekly=0 neben seven_day=7) -> Maximum der vorhandenen Werte statt blinder Vorrang.
 weekly=$(echo "$input"       | jq -r '[.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage] | map(select(type=="number")) | max | values | round')
 weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage] | map(select(type=="number")) | max | values | round')
+# Reset-Zeitstempel der Wochen-Limits (Epoch) -> verstrichene Tage fürs Daily-Pacing
+weekly_reset=$(echo "$input" | jq -r '[.rate_limits.weekly.resets_at, .rate_limits.seven_day.resets_at] | map(select(type=="number")) | max | values')
 vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 
@@ -139,7 +143,46 @@ seg_rate=""
 if [ -n "$five_h" ]; then
   rate_val=$(LC_NUMERIC=C printf '%.0f' "$five_h")
   col=$(pct_color "$rate_val")
-  seg_rate="${col}5h ${rate_val}%${RESET}"
+  # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
+  cd=""
+  if [ -n "$five_h_reset" ]; then
+    cd=$(awk -v reset="$five_h_reset" -v now="$(date +%s)" 'BEGIN{
+      s = reset - now
+      if (s < 0) s = 0
+      h = int(s / 3600)
+      m = int((s % 3600) / 60)
+      if (h > 0) printf " (%dh%02dm)", h, m
+      else       printf " (%dm)", m
+    }')
+  fi
+  seg_rate="${col}5h ${rate_val}%${cd}${RESET}"
+fi
+
+# --- Segment 5a: Daily-Pacing-Delta (zwischen 5h und wk) ---
+# Die Woche ist das 100%-Budget (wk). Bei gleichmäßigem Verbrauch "darf" man pro
+# verstrichenem Tag 1/7 (~14,29%) ausgeben. delta = Soll(Zeit) - Ist(wk):
+#   delta > 0  -> unter Budget, "im Plus"  (grün)
+#   delta < 0  -> über Budget, zu schnell verbrannt, "im Minus" (gelb/rot)
+seg_daily=""
+if [ -n "$weekly" ] && [ -n "$weekly_reset" ]; then
+  daily_calc=$(awk -v reset="$weekly_reset" -v used="$weekly" -v now="$(date +%s)" 'BEGIN{
+    days_left = (reset - now) / 86400
+    if (days_left < 0) days_left = 0
+    if (days_left > 7) days_left = 7
+    days_elapsed = 7 - days_left
+    expected = days_elapsed / 7 * 100          # Soll-Verbrauch nach verstrichener Zeit
+    delta = expected - used                    # >0 = Plus (unter Budget)
+    delta = (delta < 0) ? -int(-delta + 0.5) : int(delta + 0.5)  # runden, kein "-0"
+    printf "%d %.1f", delta, days_left
+  }')
+  read -r d_val d_days_left <<< "$daily_calc"
+  # Farbe nach Pacing: Plus grün, Minus < 1 Tag gelb, Minus >= 1 Tag (14%) rot
+  if   [ "$d_val" -ge 0 ];   then dcol="$C_CTX_OK"
+  elif [ "$d_val" -gt -14 ]; then dcol="$C_CTX"
+  else                            dcol="$C_WARN"
+  fi
+  sign=""; [ "$d_val" -ge 0 ] && sign="+"   # Vorzeichen explizit -> als Delta lesbar
+  seg_daily="${dcol}d ${sign}${d_val}% (${d_days_left}d)${RESET}"
 fi
 
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
@@ -211,6 +254,29 @@ if [ "${skl_avail:-0}" -gt 0 ] 2>/dev/null; then
   seg_skl="${C_SKL}skl ${skl_used}/${skl_avail}${RESET}"
 fi
 
+# --- Segment ContextQ (token-optimizer Quality-Score, pro Session) ---
+# Der UserPromptSubmit-Hook des token-optimizer-Plugins schreibt alle ~2 Min einen
+# Score nach ~/.claude/token-optimizer/quality-cache-<sessionUUID>.json. Die UUID ist
+# der Basename des transcript_path. Fallback auf den globalen Cache.
+seg_ctxq=""
+if [ -n "$transcript" ]; then
+  sid=$(basename "$transcript" .jsonl)
+  qfile="$HOME/.claude/token-optimizer/quality-cache-${sid}.json"
+  [ -f "$qfile" ] || qfile="$HOME/.claude/token-optimizer/quality-cache.json"
+  if [ -f "$qfile" ]; then
+    qdata=$(jq -r '[((.resource_health // .score) | round), (.resource_health_grade // .grade // "?")] | @tsv' "$qfile" 2>/dev/null)
+    IFS=$'\t' read -r q_score q_grade <<< "$qdata"
+    if [ -n "$q_score" ] && [ "$q_score" != "null" ]; then
+      if   [ "$q_score" -ge 85 ]; then qcol="$C_CTX_OK"
+      elif [ "$q_score" -ge 75 ]; then qcol="$C_CTX"
+      elif [ "$q_score" -ge 50 ]; then qcol='\033[38;5;208m'
+      else                             qcol="$C_WARN"
+      fi
+      seg_ctxq="${qcol}ctxQ ${q_grade}(${q_score})${RESET}"
+    fi
+  fi
+fi
+
 # --- Segment Prompt-Cache TTL (1h wenn ENABLE_PROMPT_CACHING_1H gesetzt, sonst 5m) ---
 case "${ENABLE_PROMPT_CACHING_1H:-}" in
   1|true|TRUE) seg_cache="${C_CACHE}cache 1h${RESET}" ;;
@@ -223,17 +289,24 @@ if [ -n "$vim_mode" ]; then
   seg_vim="${C_CTX}[${vim_mode}]${RESET}"
 fi
 
-# --- Statusline zusammensetzen ---
-line="${seg_dir}"
-[ -n "$seg_git"   ] && line="${line}${SEP}${seg_git}"
-[ -n "$seg_agt"        ] && line="${line}${SEP}${seg_agt}"
-[ -n "$seg_skl"        ] && line="${line}${SEP}${seg_skl}"
-[ -n "$seg_ctx"        ] && line="${line}${SEP}${seg_ctx}"
-[ -n "$seg_rate"       ] && line="${line}${SEP}${seg_rate}"
-[ -n "$seg_weekly"     ] && line="${line}${SEP}${seg_weekly}"
-[ -n "$seg_weekly_opus" ] && line="${line}${SEP}${seg_weekly_opus}"
-[ -n "$seg_model" ] && line="${line}${SEP}${seg_model}"
-[ -n "$seg_cache"      ] && line="${line}${SEP}${seg_cache}"
-[ -n "$seg_vim"        ] && line="${line}${SEP}${seg_vim}"
+# --- Segmente zu einer Zeile fügen (leere überspringen, kein führender Trenner) ---
+join_segs() {
+  local out="" seg
+  for seg in "$@"; do
+    [ -n "$seg" ] || continue
+    [ -z "$out" ] && out="$seg" || out="${out}${SEP}${seg}"
+  done
+  printf '%s' "$out"
+}
 
-printf "%b" "$line"
+# --- Statusline zusammensetzen (2-zeilig) ---
+# Zeile 1 (Umfeld):   Pfad, branch, model, cache, (vim)
+# Zeile 2 (Metriken): ctxQ, 5h, d, wk, (wk-opus), ctx, agt, skl
+line1=$(join_segs "$seg_dir" "$seg_git" "$seg_model" "$seg_cache" "$seg_vim")
+line2=$(join_segs "$seg_ctxq" "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus" "$seg_ctx" "$seg_agt" "$seg_skl")
+
+if [ -n "$line2" ]; then
+  printf "%b\n%b" "$line1" "$line2"
+else
+  printf "%b" "$line1"
+fi
