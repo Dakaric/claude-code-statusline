@@ -2,6 +2,19 @@
 # Claude Code – farbige Statusline
 # Segmente: Verzeichnis | git-Branch | Modell | Kontext-Nutzung | ggf. Rate-Limits
 
+# Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
+# gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
+VERSION="1.0.0"
+
+# --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
+# Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
+case "${1:-}" in
+  --version|-v|version)
+    echo "claude-code-statusline v${VERSION}"
+    exit 0
+    ;;
+esac
+
 input=$(cat)
 
 # Jarvis-Cockpit: rate_limits-Snapshot rausschreiben. Das Agent-SDK liefert die

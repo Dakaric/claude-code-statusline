@@ -98,6 +98,25 @@ Then wire it up in `~/.claude/settings.json` (create the file if it doesn't exis
 
 The next Claude Code session picks it up. That's the whole install.
 
+### Pin to a release
+
+`main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
+
+```bash
+ver=v1.0.0
+base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
+curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
+curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
+
+# verify before trusting it
+( cd ~/.claude && shasum -a 256 -c /tmp/SHA256SUMS --ignore-missing )  # macOS
+# sha256sum -c /tmp/SHA256SUMS --ignore-missing                        # Linux
+
+chmod +x ~/.claude/statusline.sh
+```
+
+Check which version you have any time with `statusline.sh --version`.
+
 ### Requirements
 
 - `bash` — any modern version
@@ -139,6 +158,19 @@ Every segment is its own block and the colour palette sits at the top of the scr
 - **Go back to one line** — put every segment into a single `join_segs` call.
 - **Bar width** — change `width=10` in `make_bar()`.
 - **Avail-cache TTL** — the `300` (seconds) literal in the agents/skills block.
+
+## Releasing
+
+The version lives in one place — the `VERSION` line at the top of `statusline.sh`, surfaced by `statusline.sh --version`. A release is just a matching tag:
+
+```bash
+# 1. bump VERSION="x.y.z" in statusline.sh, commit it
+# 2. tag and push
+git tag vx.y.z
+git push origin vx.y.z
+```
+
+The push triggers [`release.yml`](.github/workflows/release.yml), which **fails the build if the tag doesn't match `VERSION`**, runs `shellcheck`, generates `SHA256SUMS`, and publishes a GitHub Release with the script and checksum attached. So the tag and the script can never drift apart.
 
 ## Uninstall
 

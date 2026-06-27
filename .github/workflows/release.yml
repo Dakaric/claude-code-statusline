@@ -1,0 +1,43 @@
+name: release
+
+# Ein gepushter Tag v<X.Y.Z> baut das Release. Der Tag ist der Auslöser,
+# die VERSION im Skript ist die Wahrheit — Step "verify" lässt sie nicht
+# auseinanderlaufen.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches VERSION in statusline.sh
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          script_ver="$(sed -nE 's/^VERSION="?([^"]+)"?.*/\1/p' statusline.sh | head -1)"
+          echo "tag=$tag  script=$script_ver"
+          if [ "$tag" != "$script_ver" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ($script_ver) in statusline.sh" >&2
+            exit 1
+          fi
+
+      - name: Lint with shellcheck
+        run: shellcheck statusline.sh
+
+      - name: Generate checksums
+        run: sha256sum statusline.sh > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            statusline.sh SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
