@@ -214,59 +214,6 @@ if [ -n "$weekly_opus" ]; then
   seg_weekly_opus="${col}wk-opus ${wo_val}%${RESET}"
 fi
 
-# --- Segment Agents/Skills (in-flight / available) ---
-# In-flight: tool_use-Aufrufe ohne passendes tool_result -> idle = 0.
-#            agt_bg = laufende run_in_background-Tasks (Teilmenge von agt_used).
-# Available: alle installierten Sub-Agents und Skills (5-Min-Cache, weil teuer).
-seg_agt=""
-seg_skl=""
-
-agt_used=0; agt_bg=0; skl_used=0
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  counts=$(jq -rs '
-    [.[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] as $uses
-    | ([.[] | select(.type=="user") | .message.content[]? | select(.type=="tool_result") | .tool_use_id] | unique) as $done
-    | ([$uses[] | select((.id) as $i | ($done | index($i)) | not)]) as $inflight
-    | [
-        ([$inflight[] | select(.name=="Task" or .name=="Agent")] | length),
-        ([$inflight[] | select((.name=="Task" or .name=="Agent") and .input.run_in_background==true)] | length),
-        ([$inflight[] | select(.name=="Skill")] | length)
-      ] | @tsv
-  ' "$transcript" 2>/dev/null)
-  [ -n "$counts" ] && IFS=$'\t' read -r agt_used agt_bg skl_used <<< "$counts"
-fi
-
-# Available counts cachen (TTL 300 s) — find über ~/.claude/plugins/cache dauert ~1.5 s
-cwd_hash=$(printf '%s' "$cwd" | md5 -q 2>/dev/null || printf '%s' "$cwd" | md5sum 2>/dev/null | cut -d' ' -f1)
-avail_cache="${TMPDIR:-/tmp}/claude-statusline-avail-${cwd_hash}.cache"
-agt_avail=0; skl_avail=0
-if [ -f "$avail_cache" ] && [ $(($(date +%s) - $(stat -f %m "$avail_cache" 2>/dev/null || stat -c %Y "$avail_cache" 2>/dev/null || echo 0))) -lt 300 ]; then
-  read -r agt_avail skl_avail < "$avail_cache"
-else
-  agt_avail=$({
-    ls "$HOME/.claude/agents/"*.md 2>/dev/null
-    [ -d "$cwd/.claude/agents" ] && ls "$cwd/.claude/agents/"*.md 2>/dev/null
-    find "$HOME/.claude/plugins/cache" -path '*/agents/*.md' -not -path '*/temp_git_*' 2>/dev/null
-  } | sed 's|.*/||;s|\.md$||' | sort -u | grep -c .)
-  skl_avail=$({
-    find "$HOME/.claude/skills" -maxdepth 3 -name SKILL.md 2>/dev/null
-    [ -d "$cwd/.claude/skills" ] && find "$cwd/.claude/skills" -maxdepth 3 -name SKILL.md 2>/dev/null
-    find "$HOME/.claude/plugins/cache" -name SKILL.md -not -path '*/temp_git_*' 2>/dev/null
-  } | sed 's|/SKILL\.md$||;s|.*/||' | sort -u | grep -c .)
-  printf '%s %s\n' "$agt_avail" "$skl_avail" > "$avail_cache"
-fi
-
-if [ "${agt_avail:-0}" -gt 0 ] 2>/dev/null; then
-  if [ "${agt_bg:-0}" -gt 0 ] 2>/dev/null; then
-    seg_agt="${C_AGT}agt ${agt_used}/${agt_avail} +${agt_bg}bg${RESET}"
-  else
-    seg_agt="${C_AGT}agt ${agt_used}/${agt_avail}${RESET}"
-  fi
-fi
-if [ "${skl_avail:-0}" -gt 0 ] 2>/dev/null; then
-  seg_skl="${C_SKL}skl ${skl_used}/${skl_avail}${RESET}"
-fi
-
 # --- Segment ContextQ (token-optimizer Quality-Score, pro Session) ---
 # Der UserPromptSubmit-Hook des token-optimizer-Plugins schreibt alle ~2 Min einen
 # Score nach ~/.claude/token-optimizer/quality-cache-<sessionUUID>.json. Die UUID ist
@@ -290,11 +237,50 @@ if [ -n "$transcript" ]; then
   fi
 fi
 
-# --- Segment Prompt-Cache TTL (1h wenn ENABLE_PROMPT_CACHING_1H gesetzt, sonst 5m) ---
+# --- Segment Prompt-Cache TTL + Countdown ---
+# TTL: 1h wenn ENABLE_PROMPT_CACHING_1H gesetzt, sonst 5m. Der Cache wird bei JEDEM
+# API-Call neu geschrieben und die TTL dabei auf voll zurueckgesetzt -- also nicht nur
+# bei einer Eingabe, sondern bei jedem Turn-Step waehrend der Agent arbeitet. Der
+# korrekte Referenzpunkt ("wann wurde der Cache zuletzt geschrieben") ist daher der
+# Timestamp der letzten assistant-Message: die 1h startet erst, wenn der Agent DURCH
+# ist. Der Transcript-mtime taugt nicht (Hooks/Memory-Consolidation beruehren ihn ohne
+# Cache-Touch). Restzeit = TTL - (jetzt - letzter_turn). Ruht die Session, laeuft sie
+# ab und bleibt auf "kalt" -- das Signal, dass der Cache weg ist (handoff/clear faellig).
 case "${ENABLE_PROMPT_CACHING_1H:-}" in
-  1|true|TRUE) seg_cache="${C_CACHE}cache 1h${RESET}" ;;
-  *)           seg_cache="${C_CACHE}cache 5m${RESET}" ;;
+  1|true|TRUE) cache_ttl=3600; cache_label="1h" ;;
+  *)           cache_ttl=300;  cache_label="5m" ;;
 esac
+seg_cache="${C_CACHE}cache ${cache_label}${RESET}"
+if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  # Epoch des letzten Cache-Touch = spaetester Timestamp aus assistant-Message (jeder
+  # API-Call schreibt Cache) und echter User-Eingabe (type=user, kein isMeta, content
+  # String oder Array ohne tool_result -- deckt den Latenz-Fall ab, waehrend der Agent
+  # auf die neue Eingabe noch nicht geantwortet hat). Meta/Hook-Zeilen fallen raus.
+  t_mtime=$(jq -r 'select((.type=="assistant") or (.type=="user" and (.isMeta|not) and ((.message.content|type=="string") or ((.message.content|type=="array") and (any(.message.content[]; .type=="tool_result")|not))))) | (.timestamp | sub("\\.[0-9]+";"") | fromdateiso8601)' "$transcript" 2>/dev/null | tail -1)
+  # Fallback auf File-mtime, falls das Transcript (noch) keine parsebare Turn-Zeile hat.
+  [ -n "$t_mtime" ] || t_mtime=$(stat -f %m "$transcript" 2>/dev/null || stat -c %Y "$transcript" 2>/dev/null || echo 0)
+  cache_calc=$(awk -v ttl="$cache_ttl" -v mt="$t_mtime" -v now="$(date +%s)" 'BEGIN{
+    if (mt <= 0) { print "-1|"; exit }
+    s = ttl - (now - mt)
+    if (s < 0) s = 0
+    h = int(s/3600); m = int((s%3600)/60); sec = int(s%60)
+    if      (s <= 0) lbl = "kalt"
+    else if (h > 0)  lbl = sprintf("%dh%02dm", h, m)
+    else if (m > 0)  lbl = sprintf("%dm%02ds", m, sec)
+    else             lbl = sprintf("%ds", sec)
+    printf "%d|%s", s, lbl
+  }')
+  c_secs="${cache_calc%%|*}"; c_lbl="${cache_calc##*|}"
+  if [ "$c_secs" != "-1" ]; then
+    # Farbe: viel Zeit Cyan, letztes Fünftel Gelb, abgelaufen Rot.
+    thresh=$(awk -v t="$cache_ttl" 'BEGIN{printf "%d", t*0.2}')
+    if   [ "$c_secs" -le 0 ];         then ccol="$C_WARN"
+    elif [ "$c_secs" -lt "$thresh" ]; then ccol="$C_CTX"
+    else                                   ccol="$C_CACHE"
+    fi
+    seg_cache="${ccol}cache ${c_lbl}/${cache_label}${RESET}"
+  fi
+fi
 
 # --- Segment 6: Vim-Mode ---
 seg_vim=""
@@ -313,10 +299,10 @@ join_segs() {
 }
 
 # --- Statusline zusammensetzen (2-zeilig) ---
-# Zeile 1 (Umfeld):   Pfad, branch, model, cache, (vim)
-# Zeile 2 (Metriken): ctxQ, 5h, d, wk, (wk-opus), ctx, agt, skl
+# Zeile 1 (Umfeld):   Pfad, branch, model, cache-countdown, (vim)
+# Zeile 2 (Metriken): ctxQ, 5h, d, wk, (wk-opus), ctx
 line1=$(join_segs "$seg_dir" "$seg_git" "$seg_model" "$seg_cache" "$seg_vim")
-line2=$(join_segs "$seg_ctxq" "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus" "$seg_ctx" "$seg_agt" "$seg_skl")
+line2=$(join_segs "$seg_ctxq" "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus" "$seg_ctx")
 
 if [ -n "$line2" ]; then
   printf "%b\n%b" "$line1" "$line2"
