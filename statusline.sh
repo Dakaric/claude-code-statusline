@@ -218,8 +218,13 @@ fi
 # Der UserPromptSubmit-Hook des token-optimizer-Plugins schreibt alle ~2 Min einen
 # Score nach ~/.claude/token-optimizer/quality-cache-<sessionUUID>.json. Die UUID ist
 # der Basename des transcript_path. Fallback auf den globalen Cache.
+# Die Session-Datei entsteht erst nach den ersten Minuten Laufzeit, und den globalen
+# Fallback legt der Hook gar nicht erst an -> eine frische Session hat schlicht noch
+# keinen Score. Dann Platzhalter statt Leerstelle, sonst liest sich das fehlende
+# Segment wie ein Defekt.
 seg_ctxq=""
 if [ -n "$transcript" ]; then
+  seg_ctxq="${C_SEP}ctxQ …${RESET}"
   sid=$(basename "$transcript" .jsonl)
   qfile="$HOME/.claude/token-optimizer/quality-cache-${sid}.json"
   [ -f "$qfile" ] || qfile="$HOME/.claude/token-optimizer/quality-cache.json"
