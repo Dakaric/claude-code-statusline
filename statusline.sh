@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -14,6 +14,12 @@ case "${1:-}" in
     exit 0
     ;;
 esac
+
+# Unter Locales mit Komma als Dezimaltrenner (de_DE, fr_FR, ...) formatieren printf und
+# awk "280.0k" als "280,0k" und "3.1d" als "3,1d". Einmal zentral neutralisiert, damit
+# nicht jede neue Rechenstelle daran denken muss -- exportiert, weil awk als Kindprozess
+# laeuft. Betrifft nur Zahlformate, nicht die Zeichenkodierung (das waere LC_CTYPE).
+export LC_NUMERIC=C
 
 input=$(cat)
 
@@ -139,7 +145,7 @@ if [ -n "$used_tok" ]; then
   used_fmt=$(fmt_tok "$used_tok")
   total_fmt=$(fmt_tok "$total_tok")
   pct="${used_pct:-0}"
-  pct_int=$(LC_NUMERIC=C printf '%.0f' "$pct" 2>/dev/null || echo 0)
+  pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo 0)
   col=$(pct_color "$pct_int")
   bar=$(make_bar "$pct_int")
   if [ -n "$total_fmt" ]; then
@@ -152,7 +158,7 @@ fi
 # --- Segment 5: 5h-Rate-Limit (immer wenn vorhanden) ---
 seg_rate=""
 if [ -n "$five_h" ]; then
-  rate_val=$(LC_NUMERIC=C printf '%.0f' "$five_h")
+  rate_val=$(printf '%.0f' "$five_h")
   col=$(pct_color "$rate_val")
   # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
   cd=""
@@ -199,7 +205,7 @@ fi
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
 seg_weekly=""
 if [ -n "$weekly" ]; then
-  w_val=$(LC_NUMERIC=C printf '%.0f' "$weekly")
+  w_val=$(printf '%.0f' "$weekly")
   col=$(pct_color "$w_val")
   seg_weekly="${col}wk ${w_val}%${RESET}"
 fi
@@ -207,7 +213,7 @@ fi
 # --- Segment 5c: Weekly-Opus-Rate-Limit (falls vorhanden) ---
 seg_weekly_opus=""
 if [ -n "$weekly_opus" ]; then
-  wo_val=$(LC_NUMERIC=C printf '%.0f' "$weekly_opus")
+  wo_val=$(printf '%.0f' "$weekly_opus")
   col=$(pct_color "$wo_val")
   seg_weekly_opus="${col}wk-opus ${wo_val}%${RESET}"
 fi
@@ -248,7 +254,7 @@ fi
 # Timestamp der letzten assistant-Message: die 1h startet erst, wenn der Agent DURCH
 # ist. Der Transcript-mtime taugt nicht (Hooks/Memory-Consolidation beruehren ihn ohne
 # Cache-Touch). Restzeit = TTL - (jetzt - letzter_turn). Ruht die Session, laeuft sie
-# ab und bleibt auf "kalt" -- das Signal, dass der Cache weg ist (handoff/clear faellig).
+# ab und bleibt auf "cold" -- das Signal, dass der Cache weg ist (handoff/clear faellig).
 case "${ENABLE_PROMPT_CACHING_1H:-}" in
   1|true|TRUE) cache_ttl=3600; cache_label="1h" ;;
   *)           cache_ttl=300;  cache_label="5m" ;;
@@ -267,7 +273,7 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
     s = ttl - (now - mt)
     if (s < 0) s = 0
     h = int(s/3600); m = int((s%3600)/60); sec = int(s%60)
-    if      (s <= 0) lbl = "kalt"
+    if      (s <= 0) lbl = "cold"
     else if (h > 0)  lbl = sprintf("%dh%02dm", h, m)
     else if (m > 0)  lbl = sprintf("%dm%02ds", m, sec)
     else             lbl = sprintf("%ds", sec)

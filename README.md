@@ -57,7 +57,7 @@ How long before your prompt cache expires and the next turn pays full price for 
 
 Every API call rewrites the cache and resets the TTL to full — not just your input, but each step the agent takes while it works. So the reference point is the timestamp of the **last assistant message** in the transcript: the clock only starts once the agent is done. (The transcript's file mtime looks like the obvious source and isn't — hooks and background writers touch it without ever touching the cache, which pins the countdown at full.)
 
-It reads `47m12s/1h` → `12m03s/1h` → `2m41s/1h` → `kalt`. Cyan while there's room, yellow in the last fifth, red once it's gone. `kalt` is your cue that the next message rebuilds the cache from scratch — a good moment to hand off or `/clear` rather than pay for context you no longer need.
+It reads `47m12s/1h` → `12m03s/1h` → `2m41s/1h` → `cold`. Cyan while there's room, yellow in the last fifth, red once it's gone. `cold` is your cue that the next message rebuilds the cache from scratch — a good moment to hand off or `/clear` rather than pay for context you no longer need.
 
 ### `5h 42% (1h58m)` — the countdown
 
@@ -103,7 +103,7 @@ The next Claude Code session picks it up. That's the whole install.
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.1.0
+ver=v1.1.1
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
@@ -142,7 +142,7 @@ Careful with `statusline.sh --version` here: `VERSION` stayed at `1.0.0` while t
 
 Expected, if you're on the 5-minute TTL. Every API call resets the cache clock to full, and the status line only redraws while Claude Code is doing something — so during a turn you're watching a timer that gets reset out from under you. You'd only catch it low in the seconds after the agent finishes.
 
-With `ENABLE_PROMPT_CACHING_1H=1` the TTL is an hour and one turn can't consume it, so the countdown visibly walks down and eventually hits `kalt`. If you want to watch it decay on the short TTL, finish a turn and leave the session alone — the next redraw shows the lower value.
+With `ENABLE_PROMPT_CACHING_1H=1` the TTL is an hour and one turn can't consume it, so the countdown visibly walks down and eventually hits `cold`. If you want to watch it decay on the short TTL, finish a turn and leave the session alone — the next redraw shows the lower value.
 
 ### The status line is blank, or just the path and model
 
