@@ -11,15 +11,15 @@
 
 # claude-code-statusline
 
-A drop-in status line for [Claude Code](https://claude.com/claude-code) that puts everything you actually glance at on **two tidy lines**: where you are and what you're running up top, and every live metric — context window, rate limits, weekly pacing, sub-agents and skills — underneath.
+A drop-in status line for [Claude Code](https://claude.com/claude-code) that puts everything you actually glance at on **two tidy lines**: where you are and what you're running up top, and every live metric — context window, prompt-cache TTL, rate limits and weekly pacing — underneath.
 
 A single `bash` script, one `jq` pass per refresh. No daemon, no config file, no dependencies beyond `jq`.
 
 > Unofficial. Not affiliated with or endorsed by Anthropic. It reads the JSON that Claude Code already pipes to its status line command — nothing else.
 
 ```
-~/Sites/my-project   main   Opus 4.8   cache 1h
-ctxQ A(92)   5h 42% (1h58m)   d +6% (3.2d)   wk 18%   ctx ███░░░░░░░ 28% (280k/1M)   agt 3/33   skl 7/141
+~/Sites/my-project   main   Opus 4.8   cache 47m12s/1h
+ctxQ A(92)   5h 42% (1h58m)   d +6% (3.2d)   wk 18%   wk-opus 7%   ctx ███░░░░░░░ 28% (280k/1M)
 ```
 
 Segments only appear when there's something to show — a fresh session in a non-git directory is just the path and the model, nothing else.
@@ -29,7 +29,7 @@ Segments only appear when there's something to show — a fresh session in a non
 | Line | Question it answers | Segments |
 |------|---------------------|----------|
 | **Context** | Where am I, on what? | directory · git branch · model · prompt-cache TTL · vim mode |
-| **Metrics** | What am I burning, and how fast? | context quality · 5h limit · daily pacing · weekly · weekly-opus · context window · agents · skills |
+| **Metrics** | What am I burning, and how fast? | context quality · 5h limit · daily pacing · weekly · weekly-opus · context window |
 
 The split is the point: the top line is stable and rarely changes within a session, the bottom line moves on every turn. Your eye learns where to look.
 
@@ -40,7 +40,7 @@ The split is the point: the top line is stable and rarely changes within a sessi
 | Directory | `~/Sites/my-project` | always (home collapsed to `~`) |
 | Git | ` main` | in a git repo |
 | Model | `Opus 4.8` | always |
-| Prompt-cache | `cache 1h` | always — `1h` if `ENABLE_PROMPT_CACHING_1H` is set, else `5m` |
+| Prompt-cache | `cache 47m12s/1h` | always — time left before the prompt cache goes cold, over the TTL |
 | Vim mode | `[NORMAL]` | when vim mode is enabled |
 | Context quality | `ctxQ A(92)` | when a token-optimizer score exists for the session |
 | 5h limit | `5h 42% (1h58m)` | when present — percentage used + time left until reset |
@@ -48,10 +48,16 @@ The split is the point: the top line is stable and rarely changes within a sessi
 | Weekly | `wk 18%` | when present |
 | Weekly Opus | `wk-opus 7%` | when present |
 | Context window | `ctx ███░░░░░░░ 28% (280k/1M)` | progress bar, green → yellow → red as it fills |
-| Agents | `agt 3/33 +1bg` | in-flight `used/available`, `+Nbg` for background agents still running |
-| Skills | `skl 7/141` | skills invoked this session / total installed |
 
 Every percentage colours itself: green under 50%, yellow from 50%, red from 80%.
+
+### `cache 47m12s/1h` — prompt-cache TTL
+
+How long before your prompt cache expires and the next turn pays full price for the whole context again. The TTL is `1h` when `ENABLE_PROMPT_CACHING_1H` is set, otherwise `5m`.
+
+Every API call rewrites the cache and resets the TTL to full — not just your input, but each step the agent takes while it works. So the reference point is the timestamp of the **last assistant message** in the transcript: the clock only starts once the agent is done. (The transcript's file mtime looks like the obvious source and isn't — hooks and background writers touch it without ever touching the cache, which pins the countdown at full.)
+
+It reads `47m12s/1h` → `12m03s/1h` → `2m41s/1h` → `kalt`. Cyan while there's room, yellow in the last fifth, red once it's gone. `kalt` is your cue that the next message rebuilds the cache from scratch — a good moment to hand off or `/clear` rather than pay for context you no longer need.
 
 ### `5h 42% (1h58m)` — the countdown
 
@@ -70,12 +76,6 @@ The trailing `(3.2d)` is how much of the week is left before the limit resets. I
 ### `ctxQ A(92)` — context quality
 
 If you run a token-optimizer plugin that scores context health, its `UserPromptSubmit` hook writes a grade to `~/.claude/token-optimizer/quality-cache-<session>.json` every couple of minutes. The segment surfaces that grade and score (`A(92)`), coloured green/yellow/orange/red by band. No file, no segment — it stays out of the way.
-
-### How `agt` and `skl` are counted
-
-- **Used is in-flight, not cumulative.** The script parses the session transcript (`transcript_path`) and counts `Task`/`Agent` and `Skill` tool calls that have **no matching `tool_result` yet** — i.e. work that's actually running right now, not everything you've ever launched. Idle session → `0`.
-- **`+Nbg`** counts the in-flight `Task` calls dispatched with `run_in_background: true`.
-- **Available** is every installed sub-agent (`~/.claude/agents/`, project `.claude/agents/`, plugin agents) and skill (`SKILL.md` files in the same places). Scanning the plugin cache is slow, so this is cached for 5 minutes per working directory.
 
 ## Install
 
@@ -103,7 +103,7 @@ The next Claude Code session picks it up. That's the whole install.
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.0.0
+ver=v1.1.0
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
@@ -123,6 +123,57 @@ Check which version you have any time with `statusline.sh --version`.
 - `jq` — `brew install jq` (macOS) or `apt install jq` (Debian/Ubuntu)
 - A terminal with ANSI colour and basic Unicode (block characters for the progress bar)
 
+## Troubleshooting
+
+### The cache segment shows `cache 1h` and never counts down
+
+You're on a build from before the countdown existed. Check in one line:
+
+```bash
+grep -c cache_calc ~/.claude/statusline.sh
+```
+
+- **`0`** — old script. The cache segment there is a fixed label with no countdown code at all; nothing about your setup can make it move. Re-run the `curl` from [Install](#install), or pin `v1.1.0` or later. **Release `v1.0.0` does not have the countdown.**
+- **`1`** — you have the countdown, see the next entry.
+
+Careful with `statusline.sh --version` here: `VERSION` stayed at `1.0.0` while the countdown landed on `main`, so builds pulled from `main` between the two releases report `v1.0.0` and *do* have it. `v1.1.0` onwards the version string is trustworthy again — but the `grep` settles it either way.
+
+### The countdown is there but always reads near-full
+
+Expected, if you're on the 5-minute TTL. Every API call resets the cache clock to full, and the status line only redraws while Claude Code is doing something — so during a turn you're watching a timer that gets reset out from under you. You'd only catch it low in the seconds after the agent finishes.
+
+With `ENABLE_PROMPT_CACHING_1H=1` the TTL is an hour and one turn can't consume it, so the countdown visibly walks down and eventually hits `kalt`. If you want to watch it decay on the short TTL, finish a turn and leave the session alone — the next redraw shows the lower value.
+
+### The status line is blank, or just the path and model
+
+`jq` is missing or not on the `PATH` Claude Code runs with. Every field is extracted through it, so without `jq` there's nothing to print. Confirm with `jq --version`, install per [Requirements](#requirements).
+
+If `jq` is fine but the cache countdown is the only thing missing, the payload has no `transcript_path` — some older Claude Code versions don't send it. The segment falls back to a bare `cache 1h` with no time left on it.
+
+### `ctxQ` sits at `…` forever
+
+The placeholder means "no score written yet". The `ctxQ` segment reads a file that a token-optimizer plugin's `UserPromptSubmit` hook writes every couple of minutes to `~/.claude/token-optimizer/quality-cache-<session>.json` — it's not something this script computes. Fresh sessions show `…` for the first few minutes; if it never resolves, that plugin isn't installed or its hook isn't firing:
+
+```bash
+ls -la ~/.claude/token-optimizer/
+```
+
+No plugin, no score. Drop the `seg_ctxq` block from `line2` if you don't use one.
+
+### The `agt` and `skl` counters are gone
+
+Removed in `v1.1.0`. Earlier versions carried in-flight sub-agent and skill counters on the metrics line; they scanned the plugin cache on every refresh and were dropped. `v1.0.0` still has them if you want them back.
+
+### Nothing changed after editing the script
+
+Claude Code reads the `statusLine` command per session. Start a new session, and check that the path in `~/.claude/settings.json` points at the file you actually edited — a symlinked or second copy under `~/.claude/statusline-command.sh` is a common mix-up. Verify the script runs standalone:
+
+```bash
+echo '{}' | ~/.claude/statusline.sh
+```
+
+That should print a line, not an error. Also confirm it's executable (`chmod +x`).
+
 ## How it works
 
 Claude Code pipes a JSON object to the status line command on every refresh. The script makes one read of the fields it needs:
@@ -134,10 +185,10 @@ Claude Code pipes a JSON object to the status line command on every refresh. The
 | `context_window.{context_window_size, used_percentage, current_usage}` | context window bar |
 | `rate_limits.{five_hour, weekly, weekly_opus}.used_percentage` | 5h / weekly / weekly-opus |
 | `rate_limits.*.resets_at` | the 5h countdown and daily-pacing maths |
-| `transcript_path` | agent / skill counts |
+| `transcript_path` | prompt-cache countdown, context-quality score |
 | `vim.mode` | vim indicator |
 
-Rate-limit keys drift between CLI versions (`weekly` vs `seven_day`), so the script takes the **max** of the known aliases instead of trusting one. The transcript is parsed in a single `jq` pass; available agent/skill counts are cached at `$TMPDIR/claude-statusline-avail-<cwd-hash>.cache`.
+Rate-limit keys drift between CLI versions (`weekly` vs `seven_day`), so the script takes the **max** of the known aliases instead of trusting one. The transcript is read in a single `jq` pass for the last assistant timestamp that drives the cache countdown.
 
 ### Rate-limit snapshot
 
@@ -157,7 +208,7 @@ Every segment is its own block and the colour palette sits at the top of the scr
 - **Re-order or drop a segment** — change the `join_segs` argument lists at the bottom (`line1` / `line2`). Move a segment between lines, or delete it from both.
 - **Go back to one line** — put every segment into a single `join_segs` call.
 - **Bar width** — change `width=10` in `make_bar()`.
-- **Avail-cache TTL** — the `300` (seconds) literal in the agents/skills block.
+- **Cache-countdown thresholds** — the `t*0.2` in the prompt-cache block decides when the countdown turns yellow.
 
 ## Releasing
 

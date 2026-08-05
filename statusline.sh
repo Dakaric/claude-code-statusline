@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -68,8 +68,6 @@ C_CTX='\033[93m'        # Gelb         – Kontext
 C_CTX_OK='\033[92m'     # Grün         – Kontext niedrig
 C_WARN='\033[91m'       # helles Rot   – Warnung
 C_SEP='\033[2;37m'      # Dim-Weiß     – Trennzeichen
-C_AGT='\033[94m'        # helles Blau   – Sub-Agents
-C_SKL='\033[35m'        # Magenta       – Skills
 C_CACHE='\033[36m'      # Cyan          – Prompt-Cache TTL
 
 SEP=" ${C_SEP}|${RESET} "
