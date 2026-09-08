@@ -21,10 +21,16 @@ esac
 # laeuft. Betrifft nur Zahlformate, nicht die Zeichenkodierung (das waere LC_CTYPE).
 export LC_NUMERIC=C
 
+# Ein Zeitpunkt fuer den ganzen Lauf. Ueber STATUSLINE_NOW stellbar, damit Tests
+# Zeitpunkte setzen koennen, statt auf die Uhr zu warten. Im Normalbetrieb ist die
+# Variable nicht gesetzt.
+NOW="${STATUSLINE_NOW:-$(date +%s)}"
+
 input=$(cat)
 
 # Jarvis-Cockpit: rate_limits-Snapshot rausschreiben. Das Agent-SDK liefert die
 # Auslastung nicht, nur dieser Statusline-Payload hat sie -> Jarvis liest die Datei.
+mkdir -p ~/.claude 2>/dev/null
 echo "$input" | jq -c '{rate_limits: (.rate_limits // {}), captured_at: now}' \
   > ~/.claude/jarvis-rate-limits.json 2>/dev/null
 
@@ -75,8 +81,17 @@ C_CTX_OK='\033[92m'     # Grün         – Kontext niedrig
 C_WARN='\033[91m'       # helles Rot   – Warnung
 C_SEP='\033[2;37m'      # Dim-Weiß     – Trennzeichen
 C_CACHE='\033[36m'      # Cyan          – Prompt-Cache TTL
+C_ORANGE='\033[38;5;208m' # Orange       – ctxQ im mittleren Bereich
 
 SEP=" ${C_SEP}|${RESET} "
+
+# NO_COLOR (https://no-color.org) leert alle Sequenzen. Die Tests vergleichen so reinen
+# Text, statt ANSI-Codes mitzupflegen.
+if [ -n "${NO_COLOR:-}" ]; then
+  RESET='' BOLD='' C_DIR='' C_GIT='' C_MODEL='' C_CTX='' C_CTX_OK='' \
+    C_WARN='' C_SEP='' C_CACHE='' C_ORANGE=''
+  SEP=" | "
+fi
 
 # --- Hilfsfunktion: Tokens hübsch formatieren (z.B. 48400 -> 48.4k, 1000000 -> 1M) ---
 fmt_tok() {
@@ -167,7 +182,7 @@ if [ -n "$five_h" ]; then
   # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
   cd=""
   if [ -n "$five_h_reset" ]; then
-    cd=$(awk -v reset="$five_h_reset" -v now="$(date +%s)" 'BEGIN{
+    cd=$(awk -v reset="$five_h_reset" -v now="$NOW" 'BEGIN{
       s = reset - now
       if (s < 0) s = 0
       h = int(s / 3600)
@@ -186,7 +201,7 @@ fi
 #   delta < 0  -> über Budget, zu schnell verbrannt, "im Minus" (gelb/rot)
 seg_daily=""
 if [ -n "$weekly" ] && [ -n "$weekly_reset" ]; then
-  daily_calc=$(awk -v reset="$weekly_reset" -v used="$weekly" -v now="$(date +%s)" 'BEGIN{
+  daily_calc=$(awk -v reset="$weekly_reset" -v used="$weekly" -v now="$NOW" 'BEGIN{
     days_left = (reset - now) / 86400
     if (days_left < 0) days_left = 0
     if (days_left > 7) days_left = 7
@@ -242,7 +257,7 @@ if [ -n "$transcript" ]; then
     if [ -n "$q_score" ] && [ "$q_score" != "null" ]; then
       if   [ "$q_score" -ge 85 ]; then qcol="$C_CTX_OK"
       elif [ "$q_score" -ge 75 ]; then qcol="$C_CTX"
-      elif [ "$q_score" -ge 50 ]; then qcol='\033[38;5;208m'
+      elif [ "$q_score" -ge 50 ]; then qcol="$C_ORANGE"
       else                             qcol="$C_WARN"
       fi
       seg_ctxq="${qcol}ctxQ ${q_grade}(${q_score})${RESET}"
@@ -272,7 +287,7 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
   t_mtime=$(jq -r 'select((.type=="assistant") or (.type=="user" and (.isMeta|not) and ((.message.content|type=="string") or ((.message.content|type=="array") and (any(.message.content[]; .type=="tool_result")|not))))) | (.timestamp | sub("\\.[0-9]+";"") | fromdateiso8601)' "$transcript" 2>/dev/null | tail -1)
   # Fallback auf File-mtime, falls das Transcript (noch) keine parsebare Turn-Zeile hat.
   [ -n "$t_mtime" ] || t_mtime=$(stat -f %m "$transcript" 2>/dev/null || stat -c %Y "$transcript" 2>/dev/null || echo 0)
-  cache_calc=$(awk -v ttl="$cache_ttl" -v mt="$t_mtime" -v now="$(date +%s)" 'BEGIN{
+  cache_calc=$(awk -v ttl="$cache_ttl" -v mt="$t_mtime" -v now="$NOW" 'BEGIN{
     if (mt <= 0) { print "-1|"; exit }
     s = ttl - (now - mt)
     if (s < 0) s = 0
