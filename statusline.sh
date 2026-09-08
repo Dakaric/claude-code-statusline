@@ -61,6 +61,8 @@ weekly_reset=$(echo "$input" | jq -r '[.rate_limits.weekly.resets_at, .rate_limi
 vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
 # Ablaufzeitpunkt und TTL des Prompt-Caches nennt der Payload direkt. Das ersetzt die
 # Rechnung ueber das Transcript, die denselben Wert nur nachbaut.
+worktree=$(echo "$input"     | jq -r '.worktree.name // .workspace.git_worktree // empty')
+effort=$(echo "$input"       | jq -r '.effort.level // empty')
 cache_expires=$(echo "$input" | jq -r '.prompt_cache.expires_at // empty')
 cache_ttl_lbl=$(echo "$input" | jq -r '.prompt_cache.ttl // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
@@ -123,8 +125,22 @@ else
   seg_git=""
 fi
 
+# --- Segment 2b: Worktree ---
+# Nur gesetzt, wenn die Sitzung in einem Worktree laeuft. Im Hauptbaum fehlt das Feld.
+seg_worktree=""
+if [ -n "$worktree" ]; then
+  seg_worktree="${C_GIT}wt ${worktree}${RESET}"
+fi
+
 # --- Segment 3: Modell ---
 seg_model="${C_MODEL}${model}${RESET}"
+
+# --- Segment 3b: Effort-Stufe ---
+# Der Payload nennt den Wert der laufenden Sitzung, also auch den nach einem /effort.
+seg_effort=""
+if [ -n "$effort" ]; then
+  seg_effort="${C_MODEL}effort ${effort}${RESET}"
+fi
 
 # --- Hilfsfunktion: Progressbar (10 Segmente) ---
 # Args: percent (0-100)  -> "█████░░░░░"
@@ -354,14 +370,20 @@ join_segs() {
   printf '%s' "$out"
 }
 
-# --- Statusline zusammensetzen (2-zeilig) ---
-# Zeile 1 (Umfeld):   Pfad, branch, model, cache-countdown, (vim)
-# Zeile 2 (Metriken): ctxQ, 5h, d, wk, (wk-opus), ctx
-line1=$(join_segs "$seg_dir" "$seg_git" "$seg_model" "$seg_cache" "$seg_vim")
-line2=$(join_segs "$seg_ctxq" "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus" "$seg_ctx")
+# --- Statusline zusammensetzen (4-zeilig) ---
+# Zeile 1 (Ort):      Pfad, branch, worktree
+# Zeile 2 (Werkzeug): Modell, Effort, vim
+# Zeile 3 (Sitzung):  ctxQ, ctx, cache
+# Zeile 4 (Limits):   5h, d bzw. Runway, wk, (wk-opus)
+# Eine leere Zeile entfaellt ganz, statt als Leerzeile zu erscheinen: eine Sitzung ohne
+# Rate-Limits hat damit drei Zeilen statt einer Luecke.
+line1=$(join_segs "$seg_dir" "$seg_git" "$seg_worktree")
+line2=$(join_segs "$seg_model" "$seg_effort" "$seg_vim")
+line3=$(join_segs "$seg_ctxq" "$seg_ctx" "$seg_cache")
+line4=$(join_segs "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus")
 
-if [ -n "$line2" ]; then
-  printf "%b\n%b" "$line1" "$line2"
-else
-  printf "%b" "$line1"
-fi
+out="$line1"
+for line in "$line2" "$line3" "$line4"; do
+  [ -n "$line" ] && out="${out}"$'\n'"${line}"
+done
+printf "%b" "$out"
