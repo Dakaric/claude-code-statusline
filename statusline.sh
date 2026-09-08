@@ -371,6 +371,37 @@ if [ "$acct_n" -ge 2 ]; then
   fi
 fi
 
+# --- Segment 5a3: Wechselsignal ---
+# Zwei Gruende, den Account zu wechseln. Erstens Erschoepfung: hier ist Schluss, woanders
+# nicht. Zweitens Verfall: dort laeuft mehr Budget pro Tag ab als hier, es geht also
+# verloren, wenn es liegen bleibt. Beides zaehlt nur, wenn im Ziel ueberhaupt
+# 5h-Kapazitaet frei ist, sonst bringt der Wechsel nichts.
+# Der Verfallsgrund allein wuerde den haeufigsten Fall verpassen: ein frisch
+# zurueckgesetzter Account hat sieben Tage fuer 100 Punkte und damit fast immer die
+# niedrigere Verfallsrate, obwohl genau dorthin zu wechseln waere.
+seg_switch=""
+if [ "$acct_n" -ge 2 ] && [ -n "$acct_uuid" ]; then
+  switch_to=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
+    ((map(select(.uuid == $u)) | first) // {}) as $me
+    | (if ($me.wk_reset // 0) > $now then ($me.wk_reset - $now) / 86400 else 7 end) as $me_days
+    | ((100 - ($me.wk_used // 0)) / $me_days) as $me_decay
+    | ((($me.fh_used // 0) >= 95) or (($me.wk_used // 0) >= 95)) as $me_done
+    | [ to_entries[]
+        | select(.value.uuid != $u)
+        | (("ABCDEFGH" | split(""))[.key]) as $lbl
+        | (if .value.fh_reset <= $now then 0 else .value.fh_used end) as $fh
+        | select($fh < 95)
+        | (if .value.wk_reset > $now then (.value.wk_reset - $now) / 86400 else 7 end) as $days
+        | ((100 - .value.wk_used) / $days) as $decay
+        | select($me_done or ($decay > $me_decay))
+        | {lbl: $lbl, decay: $decay}
+      ]
+    | sort_by(-.decay) | first | .lbl // empty')
+  if [ -n "$switch_to" ]; then
+    seg_switch="${C_WARN}-> ${switch_to}${RESET}"
+  fi
+fi
+
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
 seg_weekly=""
 if [ -n "$weekly" ]; then
@@ -516,13 +547,13 @@ join_segs() {
 # Zeile 1 (Ort):      Pfad, branch, worktree
 # Zeile 2 (Werkzeug): Modell, Effort, vim
 # Zeile 3 (Sitzung):  ctxQ, ctx, cache
-# Zeile 4 (Limits):   5h, wk, (wk-opus), d bzw. Runway
+# Zeile 4 (Limits):   5h, wk, (wk-opus), d bzw. Runway, (Wechselsignal)
 # Eine leere Zeile entfaellt ganz, statt als Leerzeile zu erscheinen: eine Sitzung ohne
 # Rate-Limits hat damit drei Zeilen statt einer Luecke.
 line1=$(join_segs "$seg_dir" "$seg_git" "$seg_worktree")
 line2=$(join_segs "$seg_model" "$seg_effort" "$seg_vim")
 line3=$(join_segs "$seg_ctxq" "$seg_ctx" "$seg_cache")
-line4=$(join_segs "$seg_rate" "$seg_weekly" "$seg_weekly_opus" "$seg_daily")
+line4=$(join_segs "$seg_rate" "$seg_weekly" "$seg_weekly_opus" "$seg_daily" "$seg_switch")
 
 out="$line1"
 for line in "$line2" "$line3" "$line4"; do

@@ -1,4 +1,4 @@
 /opt/projekt
 Opus 5 (1M) | effort xhigh
 ctx █████░░░░░ 45% (90k/200k) | cache 5m
-5h A 23% (3h20m) B frei | wk A 60% (5.2d) B 78% (0.9d) | rw 2.0d | -> B
+5h A 23% (3h20m) B 96% | wk A 24% (5.2d) B 78% (0.9d) | rw ?
