@@ -24,6 +24,8 @@ ctxQ A(92)   ctx ███░░░░░░░ 28% (280k/1M)   cache 47m12s/1h
 5h 42% (1h58m)   wk 18%   wk-opus 7%   d +6% (3.2d)
 ```
 
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
+
 Segments only appear when there's something to show — a fresh session in a non-git directory is just the path and the model, nothing else.
 
 ## Four lines, four jobs
@@ -249,12 +251,15 @@ The version lives in one place — the `VERSION` line at the top of `statusline.
 
 ```bash
 # 1. bump VERSION="x.y.z" in statusline.sh, commit it
-# 2. tag and push
+# 2. add a "## x.y.z — YYYY-MM-DD" section to CHANGELOG.md, commit it
+# 3. tag and push
 git tag vx.y.z
 git push origin vx.y.z
 ```
 
-The push triggers [`release.yml`](.github/workflows/release.yml), which **fails the build if the tag doesn't match `VERSION`**, runs `shellcheck`, generates `SHA256SUMS`, and publishes a GitHub Release with the script and checksum attached. So the tag and the script can never drift apart.
+The push triggers [`release.yml`](.github/workflows/release.yml), which **fails the build if the tag doesn't match `VERSION`** or if [`CHANGELOG.md`](CHANGELOG.md) has no section for that version, runs `shellcheck` and the test suite, generates `SHA256SUMS`, and publishes a GitHub Release with the script and checksum attached. So the tag, the script and the release notes can never drift apart.
+
+The release notes are the changelog section, written for people who just want to know what changed — not a list of commit subjects.
 
 ## Uninstall
 

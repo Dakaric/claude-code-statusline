@@ -1,8 +1,9 @@
 name: release
 
 # Ein gepushter Tag v<X.Y.Z> baut das Release. Der Tag ist der Auslöser,
-# die VERSION im Skript ist die Wahrheit — Step "verify" lässt sie nicht
-# auseinanderlaufen.
+# die VERSION im Skript ist die Wahrheit, Step "verify" lässt sie nicht
+# auseinanderlaufen. Die Release-Notes kommen aus CHANGELOG.md: ohne Abschnitt
+# für die Version bricht der Lauf ab, damit kein Release ohne Notizen entsteht.
 on:
   push:
     tags:
@@ -36,6 +37,20 @@ jobs:
       - name: Generate checksums
         run: sha256sum statusline.sh > SHA256SUMS
 
+      - name: Take release notes from CHANGELOG.md
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          awk -v hdr="## $tag " '
+            index($0, hdr) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::CHANGELOG.md has no section for $tag" >&2
+            exit 1
+          fi
+          cat RELEASE_NOTES.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,4 +58,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             statusline.sh SHA256SUMS \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file RELEASE_NOTES.md
