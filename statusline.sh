@@ -128,11 +128,15 @@ make_bar() {
 }
 
 # --- Farbauswahl nach Prozent ---
+# Args: percent [warn_at] [caution_at] -- Schwellen überschreibbar, weil nicht jedes
+# Budget gleich frueh alarmiert: beim Wochenlimit ist 80% noch normaler Verbrauch.
 pct_color() {
   local p=$1
-  if [ "$p" -ge 80 ]; then
+  local warn_at=${2:-80}
+  local caution_at=${3:-50}
+  if [ "$p" -ge "$warn_at" ]; then
     printf "%b" "$C_WARN"
-  elif [ "$p" -ge 50 ]; then
+  elif [ "$p" -ge "$caution_at" ]; then
     printf "%b" "$C_CTX"
   else
     printf "%b" "$C_CTX_OK"
@@ -206,7 +210,7 @@ fi
 seg_weekly=""
 if [ -n "$weekly" ]; then
   w_val=$(printf '%.0f' "$weekly")
-  col=$(pct_color "$w_val")
+  col=$(pct_color "$w_val" 90)
   seg_weekly="${col}wk ${w_val}%${RESET}"
 fi
 
