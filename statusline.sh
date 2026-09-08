@@ -67,6 +67,91 @@ cache_expires=$(echo "$input" | jq -r '.prompt_cache.expires_at // empty')
 cache_ttl_lbl=$(echo "$input" | jq -r '.prompt_cache.ttl // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 
+# --- Account-Identitaet und Snapshot ---
+# Der Payload nennt den Account nicht, ~/.claude.json schon. Beides zusammen ergibt
+# einen Stand pro Account, aus dem sich der gerade inaktive spaeter ablesen laesst.
+# Ohne Limits im Payload wird nichts geschrieben, sonst wuerde eine Sitzung vor der
+# ersten API-Antwort einen echten Stand mit einem leeren ueberschreiben.
+acct_dir="$HOME/.claude/statusline-accounts"
+acct_uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$HOME/.claude.json" 2>/dev/null)
+if [ -n "$acct_uuid" ] && [ -n "${five_h}${weekly}" ]; then
+  mkdir -p "$acct_dir"
+  acct_file="$acct_dir/${acct_uuid}.json"
+  first_seen=$(jq -r '.first_seen // empty' "$acct_file" 2>/dev/null)
+  [ -n "$first_seen" ] || first_seen="$NOW"
+  echo "$input" | jq -c \
+    --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
+    '{uuid: $uuid, first_seen: $seen, captured_at: $now, rate_limits: (.rate_limits // {})}' \
+    > "$acct_file" 2>/dev/null
+fi
+
+# Alle bekannten Accounts, nach erstem Auftreten sortiert. Der Index im Array ist das
+# Label: 0 ist A, 1 ist B, 2 ist C. Ein Fenster, dessen resets_at verstrichen ist, gilt
+# als unbenutzt: Claude Code entfernt es dann aus dem Payload, und das naechste startet
+# erst mit dem naechsten Prompt in diesem Account.
+accounts="[]"
+acct_n=0
+if [ -d "$acct_dir" ]; then
+  accounts=$(jq -s -c --argjson now "$NOW" '
+    map(select(.uuid))
+    | sort_by(.first_seen)
+    | map(. + {
+        wk_used:  (if (.rate_limits.seven_day.resets_at // 0) > $now
+                   then (.rate_limits.seven_day.used_percentage // 0) else 0 end),
+        wk_reset: (.rate_limits.seven_day.resets_at // 0),
+        fh_used:  (if (.rate_limits.five_hour.resets_at // 0) > $now
+                   then (.rate_limits.five_hour.used_percentage // 0) else 0 end),
+        fh_reset: (.rate_limits.five_hour.resets_at // 0)
+      })' "$acct_dir"/*.json 2>/dev/null) || accounts="[]"
+  [ -n "$accounts" ] || accounts="[]"
+  acct_n=$(echo "$accounts" | jq -r 'length')
+fi
+
+# --- Verbrauchs-Historie je Account ---
+# Nur bei geaendertem Wert und hoechstens alle fuenf Minuten anhaengen, sonst waechst die
+# Datei mit jedem Turn. Alles aelter als 48 Stunden faellt beim Schreiben raus.
+if [ -n "$acct_uuid" ] && [ -n "$weekly" ]; then
+  hist_file="$acct_dir/${acct_uuid}.history"
+  last_line=$(tail -1 "$hist_file" 2>/dev/null)
+  last_t=$(echo "$last_line" | jq -r '.t // 0' 2>/dev/null || echo 0)
+  last_u=$(echo "$last_line" | jq -r '.u // -1' 2>/dev/null || echo -1)
+  if [ "$weekly" != "$last_u" ] && [ $((NOW - last_t)) -ge 300 ]; then
+    printf '{"t":%d,"u":%d}\n' "$NOW" "$weekly" >> "$hist_file"
+    tmp_hist="${hist_file}.tmp"
+    if jq -c --argjson cut "$((NOW - 172800))" 'select(.t >= $cut)' "$hist_file" > "$tmp_hist" 2>/dev/null; then
+      mv "$tmp_hist" "$hist_file"
+    else
+      rm -f "$tmp_hist"
+    fi
+  fi
+fi
+
+# --- Verbrauchstempo der letzten 24 Stunden ueber alle Accounts ---
+# Je Account getrennt rechnen und erst dann summieren. Zusammengeworfen wuerden die
+# Zeitreihen zweier Accounts ineinandersortiert, und jeder Wechsel erschiene als
+# gewaltiger Sprung. Faellt der Wert innerhalb eines Accounts, hat sein Fenster
+# zurueckgesetzt: dann zaehlt der neue Stand selbst als Verbrauch, nicht die negative
+# Differenz. Unter zwei Messpunkten bleibt das Tempo unbekannt statt null, sonst
+# behauptete eine frische Installation, es werde nichts verbraucht.
+burn_24h=""
+burn_sum=0
+burn_known=0
+for hist_f in "$acct_dir"/*.history; do
+  [ -f "$hist_f" ] || continue
+  hist_d=$(jq -s -r --argjson from "$((NOW - 86400))" '
+    map(select(.t >= $from)) | sort_by(.t)
+    | if length < 2 then "?"
+      else . as $r
+        | ([range(1; ($r | length))
+            | ($r[.].u - $r[. - 1].u) as $step
+            | if $step >= 0 then $step else $r[.].u end] | add | tostring)
+      end' "$hist_f" 2>/dev/null) || hist_d="?"
+  [ "$hist_d" = "?" ] && continue
+  burn_sum=$(awk -v a="$burn_sum" -v b="$hist_d" 'BEGIN{printf "%.2f", a + b}')
+  burn_known=1
+done
+[ "$burn_known" = 1 ] && burn_24h="$burn_sum"
+
 # Fallback: falls current_usage leer, aus Prozent + Gesamtgröße berechnen
 if [ -z "$used_tok" ] && [ -n "$used_pct" ] && [ -n "$total_tok" ]; then
   used_tok=$(awk -v p="$used_pct" -v t="$total_tok" 'BEGIN{printf "%d", p/100*t}')
@@ -162,6 +247,17 @@ make_bar() {
   printf "%s" "$bar"
 }
 
+# --- Label eines Accounts (A, B, C ...) aus der Sortierung nach erstem Auftreten ---
+# Bei nur einem bekannten Account bleibt das Label leer, dann sieht die Zeile aus wie
+# vor dem Umbau.
+acct_label() {
+  local uuid=$1
+  [ "$acct_n" -ge 2 ] || return 0
+  echo "$accounts" | jq -r --arg u "$uuid" '
+    (map(.uuid) | index($u)) as $i
+    | if $i == null then "" else (("ABCDEFGH" | split(""))[$i]) end'
+}
+
 # --- Farbauswahl nach Prozent ---
 # Args: percent [warn_at] [caution_at] -- Schwellen überschreibbar, weil nicht jedes
 # Budget gleich frueh alarmiert: beim Wochenlimit ist 80% noch normaler Verbrauch.
@@ -212,6 +308,19 @@ if [ -n "$five_h" ]; then
     }')
   fi
   seg_rate="${col}5h ${rate_val}%${cd}${RESET}"
+  # Ab zwei Accounts bekommt der aktive seinen Buchstaben, die uebrigen haengen dahinter:
+  # "frei", wenn ihr 5h-Fenster durch ist, sonst ihr letzter bekannter Stand.
+  if [ "$acct_n" -ge 2 ]; then
+    lbl=$(acct_label "$acct_uuid")
+    seg_rate="${col}5h ${lbl} ${rate_val}%${cd}${RESET}"
+    others=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
+      to_entries[] | select(.value.uuid != $u)
+      | (("ABCDEFGH" | split(""))[.key]) as $lbl
+      | if .value.fh_reset <= $now then "\($lbl) frei" else "\($lbl) \(.value.fh_used)%" end' \
+      | tr '\n' ' ')
+    others="${others% }"
+    [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
+  fi
 fi
 
 # --- Segment 5a: Daily-Pacing-Delta (zwischen 5h und wk) ---
@@ -241,12 +350,45 @@ if [ -n "$weekly" ] && [ -n "$weekly_reset" ]; then
   seg_daily="${dcol}d ${sign}${d_val}% (${d_days_left}d)${RESET}"
 fi
 
+# --- Segment 5a2: Runway ueber das Gesamtbudget (ersetzt das Delta ab zwei Accounts) ---
+# Das Budget fuellt sich mit N mal 100 Punkten pro sieben Tage nach. Liegt das Tempo
+# darunter, laeuft nichts leer. Darueber bleiben Rest / (Tempo - Nachfuellrate) Tage. Die
+# Rechnung glaettet die einzelnen Resets zu einem gleichmaessigen Zufluss und liegt
+# deshalb um Stunden daneben, wenn ein Reset unmittelbar bevorsteht.
+if [ "$acct_n" -ge 2 ]; then
+  if [ -z "$burn_24h" ]; then
+    seg_daily="${C_SEP}rw ?${RESET}"
+  else
+    rest=$(echo "$accounts" | jq -r 'map(100 - .wk_used) | add')
+    seg_daily=$(awk -v rest="$rest" -v rate="$burn_24h" -v n="$acct_n" \
+      -v ok="$C_CTX_OK" -v mid="$C_CTX" -v warn="$C_WARN" -v rst="$RESET" 'BEGIN{
+      refill = n * 100 / 7
+      if (rate <= refill) { printf "%srw oo%s", ok, rst; exit }
+      days = rest / (rate - refill)
+      col = (days < 1) ? warn : ((days < 3) ? mid : ok)
+      printf "%srw %.1fd%s", col, days, rst
+    }')
+  fi
+fi
+
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
 seg_weekly=""
 if [ -n "$weekly" ]; then
   w_val=$(printf '%.0f' "$weekly")
   col=$(pct_color "$w_val" 90)
   seg_weekly="${col}wk ${w_val}%${RESET}"
+  # Ab zwei Accounts steht hinter jedem Wert die Restlaufzeit seines Fensters. Damit
+  # laesst sich das Wechselsignal nachrechnen, statt ihm glauben zu muessen. Ein Fenster,
+  # dessen resets_at verstrichen ist, bekommt volle sieben Tage: es startet erst mit dem
+  # naechsten Prompt in diesem Account.
+  if [ "$acct_n" -ge 2 ]; then
+    wk_all=$(echo "$accounts" | jq -r --argjson now "$NOW" '
+      to_entries[]
+      | (("ABCDEFGH" | split(""))[.key]) as $lbl
+      | (if .value.wk_reset > $now then (.value.wk_reset - $now) / 86400 else 7 end) as $days
+      | "\($lbl) \(.value.wk_used)% (\(($days * 10 | round) / 10)d)"' | tr '\n' ' ')
+    seg_weekly="${col}wk ${wk_all% }${RESET}"
+  fi
 fi
 
 # --- Segment 5c: Weekly-Opus-Rate-Limit (falls vorhanden) ---
@@ -374,13 +516,13 @@ join_segs() {
 # Zeile 1 (Ort):      Pfad, branch, worktree
 # Zeile 2 (Werkzeug): Modell, Effort, vim
 # Zeile 3 (Sitzung):  ctxQ, ctx, cache
-# Zeile 4 (Limits):   5h, d bzw. Runway, wk, (wk-opus)
+# Zeile 4 (Limits):   5h, wk, (wk-opus), d bzw. Runway
 # Eine leere Zeile entfaellt ganz, statt als Leerzeile zu erscheinen: eine Sitzung ohne
 # Rate-Limits hat damit drei Zeilen statt einer Luecke.
 line1=$(join_segs "$seg_dir" "$seg_git" "$seg_worktree")
 line2=$(join_segs "$seg_model" "$seg_effort" "$seg_vim")
 line3=$(join_segs "$seg_ctxq" "$seg_ctx" "$seg_cache")
-line4=$(join_segs "$seg_rate" "$seg_daily" "$seg_weekly" "$seg_weekly_opus")
+line4=$(join_segs "$seg_rate" "$seg_weekly" "$seg_weekly_opus" "$seg_daily")
 
 out="$line1"
 for line in "$line2" "$line3" "$line4"; do

@@ -1,0 +1,31 @@
+{
+  "workspace": {
+    "current_dir": "/opt/projekt"
+  },
+  "model": {
+    "display_name": "Opus 5 (1M)"
+  },
+  "effort": {
+    "level": "xhigh"
+  },
+  "context_window": {
+    "context_window_size": 200000,
+    "used_percentage": 45,
+    "current_usage": {
+      "input_tokens": 60000,
+      "output_tokens": 4000,
+      "cache_creation_input_tokens": 15000,
+      "cache_read_input_tokens": 11000
+    }
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 23,
+      "resets_at": 1788882000
+    },
+    "seven_day": {
+      "used_percentage": 60,
+      "resets_at": 1789318800
+    }
+  }
+}
