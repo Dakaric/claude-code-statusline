@@ -18,20 +18,24 @@ A single `bash` script, one `jq` pass per refresh. No daemon, no config file, no
 > Unofficial. Not affiliated with or endorsed by Anthropic. It reads the JSON that Claude Code already pipes to its status line command — nothing else.
 
 ```
-~/Sites/my-project   main   Opus 4.8   cache 47m12s/1h
-ctxQ A(92)   5h 42% (1h58m)   d +6% (3.2d)   wk 18%   wk-opus 7%   ctx ███░░░░░░░ 28% (280k/1M)
+~/Sites/my-project   main
+Opus 4.8   effort high
+ctxQ A(92)   ctx ███░░░░░░░ 28% (280k/1M)   cache 47m12s/1h
+5h 42% (1h58m)   wk 18%   wk-opus 7%   d +6% (3.2d)
 ```
 
 Segments only appear when there's something to show — a fresh session in a non-git directory is just the path and the model, nothing else.
 
-## Two lines, two jobs
+## Four lines, four jobs
 
 | Line | Question it answers | Segments |
 |------|---------------------|----------|
-| **Context** | Where am I, on what? | directory · git branch · model · prompt-cache TTL · vim mode |
-| **Metrics** | What am I burning, and how fast? | context quality · 5h limit · daily pacing · weekly · weekly-opus · context window |
+| **Place** | Where am I? | directory · git branch · worktree |
+| **Tool** | What am I working with? | model · effort · vim mode |
+| **Session** | How is this conversation doing? | context quality · context window · prompt-cache TTL |
+| **Limits** | What am I burning, and how fast? | 5h · weekly · weekly-opus · pacing · account switch |
 
-The split is the point: the top line is stable and rarely changes within a session, the bottom line moves on every turn. Your eye learns where to look.
+The split is the point. The first two lines barely change within a session, the last two move on every turn. Your eye learns where to look. An empty line disappears entirely rather than leaving a gap, so a session without rate limits is three lines, not four with a hole in it.
 
 ## Segments
 
@@ -39,14 +43,18 @@ The split is the point: the top line is stable and rarely changes within a sessi
 |---------|---------|---------------|
 | Directory | `~/Sites/my-project` | always (home collapsed to `~`) |
 | Git | ` main` | in a git repo |
+| Worktree | `wt my-feature` | when the session runs in a worktree |
 | Model | `Opus 4.8` | always |
+| Effort | `effort high` | when the model supports the reasoning-effort parameter |
 | Prompt-cache | `cache 47m12s/1h` | always — time left before the prompt cache goes cold, over the TTL |
 | Vim mode | `[NORMAL]` | when vim mode is enabled |
 | Context quality | `ctxQ A(92)` | when a token-optimizer score exists for the session |
 | 5h limit | `5h 42% (1h58m)` | when present — percentage used + time left until reset |
-| Daily pacing | `d +6% (3.2d)` | when the weekly limit is present |
 | Weekly | `wk 18%` | when present |
 | Weekly Opus | `wk-opus 7%` | when present |
+| Daily pacing | `d +6% (3.2d)` | with one known account |
+| Runway | `rw 2.4d` | with two or more known accounts |
+| Account switch | `-> B` | when another account is the better place to work |
 | Context window | `ctx ███░░░░░░░ 28% (280k/1M)` | progress bar, green → yellow → red as it fills |
 
 Every percentage colours itself: green under 50%, yellow from 50%, red from 80%.
@@ -72,6 +80,26 @@ The weekly limit is your real budget. Spend it evenly and you "earn" one-seventh
 - **`-20%`** — more than a full day ahead of pace. Red.
 
 The trailing `(3.2d)` is how much of the week is left before the limit resets. It turns an abstract "18% used" into "am I going to run out before Friday?"
+
+With two or more accounts this segment is replaced by the runway, described below.
+
+### Multiple accounts
+
+If you rotate between several Claude subscriptions, one account's seven-day window is no longer your budget — the sum of them is. The status line notices this on its own: it keeps one snapshot per account under `~/.claude/statusline-accounts/`, keyed by the `oauthAccount.accountUuid` from `~/.claude.json`, and switches to the multi-account view once a second file appears. With a single account nothing changes, so a fresh clone never shows any of this.
+
+Accounts are labelled `A`, `B`, `C` in the order they were first seen. The UUID stays in the filename and is never displayed.
+
+```
+5h A 87% (0h12m) B free | wk A 24% (5.1d) B 78% (0.9d) | rw 1.8d | -> B
+```
+
+**The inactive account's numbers are exact, not stale.** You only ever work in one account at a time, so the other one's usage cannot have moved since you last saw it. And if its window expires while it sits idle, it is back to zero — its own `resets_at` says so.
+
+**`rw 1.8d` — the runway.** Your combined budget refills at `N × 100` points per seven days: 28.6 points a day with two accounts. Burn less than that and you never run dry, which the segment shows as `rw oo`. Burn more and `rw` is how many days the remaining budget lasts at your pace over the last 24 hours, read from a per-account time series next to each snapshot. `rw ?` means there aren't two measurements yet. The maths smooths the individual resets into a steady trickle, so it can be off by hours when a reset is imminent.
+
+**`-> B` — the switch hint.** It appears for either of two reasons: the account you're in is finished (5h or weekly at 95% or more), or more budget is expiring elsewhere than here. The second one is a rate: `remaining / days until reset` is what you'd have to spend per day for nothing to go to waste. An account with 20% left and a reset tomorrow beats one with 60% left and five days to go. Either way the hint only shows when the target has 5h capacity free — a full five-hour window makes the switch pointless no matter how much weekly budget is expiring there.
+
+The numbers behind the hint are on the line, so you can check it rather than trust it. To forget an account you logged into by accident, delete its `.json` and `.history` from `~/.claude/statusline-accounts/`.
 
 ### `ctxQ A(92)` — context quality
 
@@ -184,9 +212,14 @@ Claude Code pipes a JSON object to the status line command on every refresh. The
 | `model.display_name` | model |
 | `context_window.{context_window_size, used_percentage, current_usage}` | context window bar |
 | `rate_limits.{five_hour, weekly, weekly_opus}.used_percentage` | 5h / weekly / weekly-opus |
-| `rate_limits.*.resets_at` | the 5h countdown and daily-pacing maths |
-| `transcript_path` | prompt-cache countdown, context-quality score |
+| `rate_limits.*.resets_at` | the 5h countdown, pacing, runway and switch hint |
+| `prompt_cache.{expires_at, ttl}` | prompt-cache countdown |
+| `worktree.name` | worktree indicator |
+| `effort.level` | effort indicator |
+| `transcript_path` | context-quality score, prompt-cache fallback on older versions |
 | `vim.mode` | vim indicator |
+
+The account identity is the one thing the payload does not carry. It comes from `oauthAccount.accountUuid` in `~/.claude.json`.
 
 Rate-limit keys drift between CLI versions (`weekly` vs `seven_day`), so the script takes the **max** of the known aliases instead of trusting one. The transcript is read in a single `jq` pass for the last assistant timestamp that drives the cache countdown.
 

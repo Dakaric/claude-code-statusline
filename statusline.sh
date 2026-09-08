@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Claude Code – farbige Statusline
-# Segmente: Verzeichnis | git-Branch | Modell | Kontext-Nutzung | ggf. Rate-Limits
+# Zeilen: Ort | Werkzeug | Sitzung | Limits (je Zeile nur, was Daten hat)
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
