@@ -1,0 +1,2 @@
+/opt/projekt | Opus 5 (1M) | cache 25m00s/1h
+5h 23% (3h20m) | d +2% (5.2d) | wk 24% | ctx █████░░░░░ 45% (90k/200k)

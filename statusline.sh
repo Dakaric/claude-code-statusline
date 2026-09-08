@@ -59,6 +59,10 @@ weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage,
 # Reset-Zeitstempel der Wochen-Limits (Epoch) -> verstrichene Tage fürs Daily-Pacing
 weekly_reset=$(echo "$input" | jq -r '[.rate_limits.weekly.resets_at, .rate_limits.seven_day.resets_at] | map(select(type=="number")) | max | values')
 vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
+# Ablaufzeitpunkt und TTL des Prompt-Caches nennt der Payload direkt. Das ersetzt die
+# Rechnung ueber das Transcript, die denselben Wert nur nachbaut.
+cache_expires=$(echo "$input" | jq -r '.prompt_cache.expires_at // empty')
+cache_ttl_lbl=$(echo "$input" | jq -r '.prompt_cache.ttl // empty')
 transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 
 # Fallback: falls current_usage leer, aus Prozent + Gesamtgröße berechnen
@@ -266,6 +270,9 @@ if [ -n "$transcript" ]; then
 fi
 
 # --- Segment Prompt-Cache TTL + Countdown ---
+# Erste Wahl ist prompt_cache aus dem Payload: dort stehen die ausgehandelte TTL und der
+# Ablaufzeitpunkt fertig drin. Fehlt das Feld (aeltere Claude-Code-Version), rechnet der
+# Zweig darunter denselben Wert aus dem Transcript nach.
 # TTL: 1h wenn ENABLE_PROMPT_CACHING_1H gesetzt, sonst 5m. Der Cache wird bei JEDEM
 # API-Call neu geschrieben und die TTL dabei auf voll zurueckgesetzt -- also nicht nur
 # bei einer Eingabe, sondern bei jedem Turn-Step waehrend der Agent arbeitet. Der
@@ -278,8 +285,26 @@ case "${ENABLE_PROMPT_CACHING_1H:-}" in
   1|true|TRUE) cache_ttl=3600; cache_label="1h" ;;
   *)           cache_ttl=300;  cache_label="5m" ;;
 esac
+# Sagt der Payload etwas anderes, gilt der Payload: er kennt die tatsaechlich
+# ausgehandelte TTL, die Umgebungsvariable nur den Wunsch.
+case "$cache_ttl_lbl" in
+  1h) cache_ttl=3600; cache_label="1h" ;;
+  5m) cache_ttl=300;  cache_label="5m" ;;
+esac
 seg_cache="${C_CACHE}cache ${cache_label}${RESET}"
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+cache_calc=""
+if [ -n "$cache_expires" ]; then
+  cache_calc=$(awk -v expires="$cache_expires" -v now="$NOW" 'BEGIN{
+    s = expires - now
+    if (s < 0) s = 0
+    h = int(s/3600); m = int((s%3600)/60); sec = int(s%60)
+    if      (s <= 0) lbl = "cold"
+    else if (h > 0)  lbl = sprintf("%dh%02dm", h, m)
+    else if (m > 0)  lbl = sprintf("%dm%02ds", m, sec)
+    else             lbl = sprintf("%ds", sec)
+    printf "%d|%s", s, lbl
+  }')
+elif [ -n "$transcript" ] && [ -f "$transcript" ]; then
   # Epoch des letzten Cache-Touch = spaetester Timestamp aus assistant-Message (jeder
   # API-Call schreibt Cache) und echter User-Eingabe (type=user, kein isMeta, content
   # String oder Array ohne tool_result -- deckt den Latenz-Fall ab, waehrend der Agent
@@ -298,9 +323,12 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
     else             lbl = sprintf("%ds", sec)
     printf "%d|%s", s, lbl
   }')
+fi
+
+# Farbe: viel Zeit Cyan, letztes Fuenftel Gelb, abgelaufen Rot. Gilt fuer beide Wege.
+if [ -n "$cache_calc" ]; then
   c_secs="${cache_calc%%|*}"; c_lbl="${cache_calc##*|}"
   if [ "$c_secs" != "-1" ]; then
-    # Farbe: viel Zeit Cyan, letztes Fünftel Gelb, abgelaufen Rot.
     thresh=$(awk -v t="$cache_ttl" 'BEGIN{printf "%d", t*0.2}')
     if   [ "$c_secs" -le 0 ];         then ccol="$C_WARN"
     elif [ "$c_secs" -lt "$thresh" ]; then ccol="$C_CTX"
