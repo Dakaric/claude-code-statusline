@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="claude-code-statusline — a two-line status line for Claude Code" width="100%">
+  <img src="assets/hero.png" alt="claude-code-statusline — a four-line status line for Claude Code" width="100%">
 </p>
 
 <p align="center">
