@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -79,10 +79,19 @@ if [ -n "$acct_uuid" ] && [ -n "${five_h}${weekly}" ]; then
   acct_file="$acct_dir/${acct_uuid}.json"
   first_seen=$(jq -r '.first_seen // empty' "$acct_file" 2>/dev/null)
   [ -n "$first_seen" ] || first_seen="$NOW"
-  echo "$input" | jq -c \
+  # Erst schreiben, dann umbenennen. Ein direktes "> $acct_file" leert die Datei vorab,
+  # und eine parallel laufende Statusline (jede Session, jede Sekunde) liest sie in
+  # diesem Moment leer: der Account fehlt fuer einen Frame, die Zeile springt.
+  # Die Endung .tmp.PID faellt nicht unter das *.json-Glob beim Einlesen.
+  acct_tmp="${acct_file}.tmp.$$"
+  if echo "$input" | jq -c \
     --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
     '{uuid: $uuid, first_seen: $seen, captured_at: $now, rate_limits: (.rate_limits // {})}' \
-    > "$acct_file" 2>/dev/null
+    > "$acct_tmp" 2>/dev/null; then
+    mv -f "$acct_tmp" "$acct_file"
+  else
+    rm -f "$acct_tmp"
+  fi
 fi
 
 # Alle bekannten Accounts, nach erstem Auftreten sortiert. Der Index im Array ist das
@@ -117,7 +126,7 @@ if [ -n "$acct_uuid" ] && [ -n "$weekly" ]; then
   last_u=$(echo "$last_line" | jq -r '.u // -1' 2>/dev/null || echo -1)
   if [ "$weekly" != "$last_u" ] && [ $((NOW - last_t)) -ge 300 ]; then
     printf '{"t":%d,"u":%d}\n' "$NOW" "$weekly" >> "$hist_file"
-    tmp_hist="${hist_file}.tmp"
+    tmp_hist="${hist_file}.tmp.$$"
     if jq -c --argjson cut "$((NOW - 172800))" 'select(.t >= $cut)' "$hist_file" > "$tmp_hist" 2>/dev/null; then
       mv "$tmp_hist" "$hist_file"
     else
