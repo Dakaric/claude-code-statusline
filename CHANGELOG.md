@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.2.1 — 2026-09-23
+
+### Fixed
+
+- **The second account no longer blinks in and out.** With several sessions open, one status line could read an account file at the exact moment another one was rewriting it, and for a second the line fell back to the single-account view. Account files are now written in one step, so a reader always sees a complete one.
+
 ## 1.2.0 — 2026-09-08
 
 ### Added
