@@ -53,9 +53,9 @@ LINES = [
     [("ctxQ A(92)", GREEN, False), SEP,
      ("ctx ", GREEN, False), ("BAR", 3, 10), (" 28% (280k/1M)", GREEN, False),
      SEP, ("cache 47m12s/1h", CYAN, False)],
-    [("5h A 42% (1h58m) B free", GREEN, False), SEP,
+    [("5h A 42% (58m) B free", GREEN, False), SEP,
      ("wk A 18% (5.1d) B 78% (0.9d)", YELLOW, False), SEP,
-     ("rw 1.8d", GREEN, False), SEP, ("-> B", RED, True)],
+     ("rw oo +8/d", GREEN, False), SEP, ("-> B", RED, True)],
 ]
 
 
