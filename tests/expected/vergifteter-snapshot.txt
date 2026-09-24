@@ -1,0 +1,4 @@
+/opt/projekt
+Opus 5 (1M) | effort xhigh
+ctx █████░░░░░ 45% (90k/200k) | cache 5m
+5h A 10% (1h00m) B 1% | wk A 45% (3.4d) B 7% (5.8d) | rw ?

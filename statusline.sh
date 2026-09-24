@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -82,17 +82,26 @@ login_uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$HOME/.claude.json" 2>/
 # der Login. Passt er zu keinem, hat ein neues Fenster begonnen. Das kann nur das des
 # Logins sein, wenn dessen bekanntes Fenster schon vorbei ist; sonst bleibt der Besitzer
 # leer, und der Stand wird nirgends geschrieben.
+# Ausnahme: Teilt der Login seinen Reset mit einem anderen Account, hat er frueher einen
+# fremden Stand abbekommen, denn nur dem Login wird je etwas zugeschrieben. Dann ersetzt
+# der neue Stand den Snapshot, statt mit ihm gemischt oder verworfen zu werden.
 acct_owner="$login_uuid"
+acct_replace=0
 if [ -n "$login_uuid" ] && [ -n "$weekly_reset" ]; then
-  acct_owner=$(jq -s -r --arg login "$login_uuid" --argjson r "$weekly_reset" \
-    --argjson now "$NOW" '
-    [.[] | select(.uuid and .rate_limits.seven_day.resets_at == $r) | .uuid] as $hits
-    | (map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
-    | if any($hits[]; . == $login) then $login
-      elif ($hits | length) > 0 then $hits[0]
-      elif $known > $now then ""
-      else $login end' \
-    "$acct_dir"/*.json 2>/dev/null) || acct_owner="$login_uuid"
+  read -r acct_owner acct_replace <<< "$(jq -s -r --arg login "$login_uuid" \
+    --argjson r "$weekly_reset" --argjson now "$NOW" '
+    map(select(.uuid)) as $all
+    | [$all[] | select(.rate_limits.seven_day.resets_at == $r) | .uuid] as $hits
+    | ($all | map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
+    | any($all[]; .uuid != $login and .rate_limits.seven_day.resets_at == $known) as $poisoned
+    | if any($hits[]; . == $login) then "\($login) 0"
+      elif ($hits | length) > 0 then "\($hits[0]) 0"
+      elif $poisoned then "\($login) 1"
+      elif $known > $now then "- 0"
+      else "\($login) 0" end' \
+    "$acct_dir"/*.json 2>/dev/null)" || true
+  [ -n "$acct_owner" ] || acct_owner="$login_uuid"
+  [ "$acct_owner" = "-" ] && acct_owner=""
 fi
 acct_uuid="${acct_owner:-$login_uuid}"
 if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
@@ -108,7 +117,8 @@ if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
   # innerhalb eines Fensters sinkt der Stand nie, ein niedrigerer stammt also aus einer
   # Session, deren letzte Antwort aelter ist als der Snapshot.
   acct_tmp="${acct_file}.tmp.$$"
-  old_limits=$(jq -c '.rate_limits // {}' "$acct_file" 2>/dev/null)
+  old_limits="{}"
+  [ "$acct_replace" = 1 ] || old_limits=$(jq -c '.rate_limits // {}' "$acct_file" 2>/dev/null)
   [ -n "$old_limits" ] || old_limits="{}"
   if echo "$input" | jq -c \
     --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
