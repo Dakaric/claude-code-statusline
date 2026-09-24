@@ -29,7 +29,7 @@ jobs:
           fi
 
       - name: Lint with shellcheck
-        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/freeze.sh tests/setup/*.sh
+        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/branch.sh tests/freeze.sh tests/setup/*.sh
 
       - name: Run tests
         run: bash tests/run.sh
@@ -42,6 +42,9 @@ jobs:
 
       - name: Run snapshot robustness test
         run: bash tests/snapshots.sh
+
+      - name: Run branch test
+        run: bash tests/branch.sh
 
       - name: Generate checksums
         run: sha256sum statusline.sh > SHA256SUMS
