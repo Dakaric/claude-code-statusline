@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.3.2 — 2026-09-24
+
+### Fixed
+
+- **An idle account now reads `B free`, as the README shows.** The status line printed the German `frei`.
+
 ## 1.3.1 — 2026-09-24
 
 ### Fixed

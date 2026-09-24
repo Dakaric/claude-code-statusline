@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.3.1"
+VERSION="1.3.2"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -378,7 +378,7 @@ if [ -n "$five_h" ]; then
     others=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
       to_entries[] | select(.value.uuid != $u)
       | (("ABCDEFGH" | split(""))[.key]) as $lbl
-      | if .value.fh_reset <= $now then "\($lbl) frei" else "\($lbl) \(.value.fh_used)%" end' \
+      | if .value.fh_reset <= $now then "\($lbl) free" else "\($lbl) \(.value.fh_used)%" end' \
       | tr '\n' ' ')
     others="${others% }"
     [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
