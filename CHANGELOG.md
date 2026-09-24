@@ -2,6 +2,18 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.3.0 — 2026-09-24
+
+### Added
+
+- **Headroom next to the runway.** `rw oo +8/d` tells you how many more points a day you could burn and still reach every weekly reset with nothing left over. Without it, `rw oo` only said you wouldn't run dry, not how much was about to expire unused.
+
+### Fixed
+
+- **Usage from one account no longer shows up under the other.** Sessions that were open before a `/login` keep reporting the account they started on, and the status line filed those numbers under whoever was logged in. One account's weekly figure flipped between its own value and the other account's. Readings are now matched to their account by the weekly reset time.
+- **An older reading no longer overwrites a newer one.** With several sessions open, each reports the usage from its own last reply, so the stored value jumped back and forth. Within a window usage only grows, so the higher value wins.
+- **The runway no longer panics over nothing.** Every one of those backward jumps counted as a fresh window and its whole value as usage, so a few real points turned into two hundred and the runway showed hours instead of forever. Resets are now recognised by the reset time changing, not by the number dropping. Usage history written by older versions is ignored, so the runway reads `rw ?` for a few minutes after the update.
+
 ## 1.2.1 — 2026-09-23
 
 ### Fixed

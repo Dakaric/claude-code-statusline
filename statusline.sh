@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.2.1"
+VERSION="1.3.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -73,8 +73,29 @@ transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
 # Ohne Limits im Payload wird nichts geschrieben, sonst wuerde eine Sitzung vor der
 # ersten API-Antwort einen echten Stand mit einem leeren ueberschreiben.
 acct_dir="$HOME/.claude/statusline-accounts"
-acct_uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$HOME/.claude.json" 2>/dev/null)
-if [ -n "$acct_uuid" ] && [ -n "${five_h}${weekly}" ]; then
+login_uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$HOME/.claude.json" 2>/dev/null)
+
+# Der Login ist global, die Limits im Payload stammen aus der letzten Antwort dieser
+# Session. Nach einem Umloggen liefern offene Sessions also noch den alten Account.
+# Den verraet der Wochen-Reset: er ist je Account ein eigener Zeitpunkt. Passt er zu
+# einem bekannten Snapshot, gehoert der Stand dorthin; passt er zu mehreren, gewinnt
+# der Login. Passt er zu keinem, hat ein neues Fenster begonnen. Das kann nur das des
+# Logins sein, wenn dessen bekanntes Fenster schon vorbei ist; sonst bleibt der Besitzer
+# leer, und der Stand wird nirgends geschrieben.
+acct_owner="$login_uuid"
+if [ -n "$login_uuid" ] && [ -n "$weekly_reset" ]; then
+  acct_owner=$(jq -s -r --arg login "$login_uuid" --argjson r "$weekly_reset" \
+    --argjson now "$NOW" '
+    [.[] | select(.uuid and .rate_limits.seven_day.resets_at == $r) | .uuid] as $hits
+    | (map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
+    | if any($hits[]; . == $login) then $login
+      elif ($hits | length) > 0 then $hits[0]
+      elif $known > $now then ""
+      else $login end' \
+    "$acct_dir"/*.json 2>/dev/null) || acct_owner="$login_uuid"
+fi
+acct_uuid="${acct_owner:-$login_uuid}"
+if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
   mkdir -p "$acct_dir"
   acct_file="$acct_dir/${acct_uuid}.json"
   first_seen=$(jq -r '.first_seen // empty' "$acct_file" 2>/dev/null)
@@ -83,10 +104,22 @@ if [ -n "$acct_uuid" ] && [ -n "${five_h}${weekly}" ]; then
   # und eine parallel laufende Statusline (jede Session, jede Sekunde) liest sie in
   # diesem Moment leer: der Account fehlt fuer einen Frame, die Zeile springt.
   # Die Endung .tmp.PID faellt nicht unter das *.json-Glob beim Einlesen.
+  # Pro Fenster gewinnt der spaetere Reset, bei gleichem Reset der hoehere Verbrauch:
+  # innerhalb eines Fensters sinkt der Stand nie, ein niedrigerer stammt also aus einer
+  # Session, deren letzte Antwort aelter ist als der Snapshot.
   acct_tmp="${acct_file}.tmp.$$"
+  old_limits=$(jq -c '.rate_limits // {}' "$acct_file" 2>/dev/null)
+  [ -n "$old_limits" ] || old_limits="{}"
   if echo "$input" | jq -c \
     --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
-    '{uuid: $uuid, first_seen: $seen, captured_at: $now, rate_limits: (.rate_limits // {})}' \
+    --argjson old "$old_limits" '
+    def later(a; b):
+      if a == null then b elif b == null then a
+      else [a, b] | max_by([.resets_at // 0, .used_percentage // 0]) end;
+    (.rate_limits // {}) as $new
+    | {uuid: $uuid, first_seen: $seen, captured_at: $now,
+       rate_limits: (reduce (($old + $new) | keys[]) as $k
+         ({}; .[$k] = later($old[$k]; $new[$k])))}' \
     > "$acct_tmp" 2>/dev/null; then
     mv -f "$acct_tmp" "$acct_file"
   else
@@ -97,7 +130,8 @@ fi
 # Alle bekannten Accounts, nach erstem Auftreten sortiert. Der Index im Array ist das
 # Label: 0 ist A, 1 ist B, 2 ist C. Ein Fenster, dessen resets_at verstrichen ist, gilt
 # als unbenutzt: Claude Code entfernt es dann aus dem Payload, und das naechste startet
-# erst mit dem naechsten Prompt in diesem Account.
+# erst mit dem naechsten Prompt in diesem Account. Seine Restlaufzeit wk_days ist dann
+# volle sieben Tage.
 accounts="[]"
 acct_n=0
 if [ -d "$acct_dir" ]; then
@@ -108,6 +142,8 @@ if [ -d "$acct_dir" ]; then
         wk_used:  (if (.rate_limits.seven_day.resets_at // 0) > $now
                    then (.rate_limits.seven_day.used_percentage // 0) else 0 end),
         wk_reset: (.rate_limits.seven_day.resets_at // 0),
+        wk_days:  (if (.rate_limits.seven_day.resets_at // 0) > $now
+                   then (.rate_limits.seven_day.resets_at - $now) / 86400 else 7 end),
         fh_used:  (if (.rate_limits.five_hour.resets_at // 0) > $now
                    then (.rate_limits.five_hour.used_percentage // 0) else 0 end),
         fh_reset: (.rate_limits.five_hour.resets_at // 0)
@@ -119,13 +155,17 @@ fi
 # --- Verbrauchs-Historie je Account ---
 # Nur bei geaendertem Wert und hoechstens alle fuenf Minuten anhaengen, sonst waechst die
 # Datei mit jedem Turn. Alles aelter als 48 Stunden faellt beim Schreiben raus.
-if [ -n "$acct_uuid" ] && [ -n "$weekly" ]; then
+# Der Wert kommt aus dem Snapshot, nicht aus dem Payload: dort ist ein veralteter Stand
+# schon aussortiert. Der Reset r kennzeichnet das Fenster, zu dem der Wert gehoert.
+if [ -n "$acct_owner" ] && [ -n "$weekly" ]; then
   hist_file="$acct_dir/${acct_uuid}.history"
+  read -r hist_u hist_r <<< "$(echo "$accounts" | jq -r --arg u "$acct_uuid" '
+    .[] | select(.uuid == $u) | "\(.wk_used | round) \(.wk_reset)"')"
   last_line=$(tail -1 "$hist_file" 2>/dev/null)
   last_t=$(echo "$last_line" | jq -r '.t // 0' 2>/dev/null || echo 0)
-  last_u=$(echo "$last_line" | jq -r '.u // -1' 2>/dev/null || echo -1)
-  if [ "$weekly" != "$last_u" ] && [ $((NOW - last_t)) -ge 300 ]; then
-    printf '{"t":%d,"u":%d}\n' "$NOW" "$weekly" >> "$hist_file"
+  last_ur=$(echo "$last_line" | jq -r '"\(.u // -1) \(.r // 0)"' 2>/dev/null || echo "-1 0")
+  if [ -n "$hist_u" ] && [ "$hist_u $hist_r" != "$last_ur" ] && [ $((NOW - last_t)) -ge 300 ]; then
+    printf '{"t":%d,"u":%d,"r":%d}\n' "$NOW" "$hist_u" "$hist_r" >> "$hist_file"
     tmp_hist="${hist_file}.tmp.$$"
     if jq -c --argjson cut "$((NOW - 172800))" 'select(.t >= $cut)' "$hist_file" > "$tmp_hist" 2>/dev/null; then
       mv "$tmp_hist" "$hist_file"
@@ -138,22 +178,25 @@ fi
 # --- Verbrauchstempo der letzten 24 Stunden ueber alle Accounts ---
 # Je Account getrennt rechnen und erst dann summieren. Zusammengeworfen wuerden die
 # Zeitreihen zweier Accounts ineinandersortiert, und jeder Wechsel erschiene als
-# gewaltiger Sprung. Faellt der Wert innerhalb eines Accounts, hat sein Fenster
-# zurueckgesetzt: dann zaehlt der neue Stand selbst als Verbrauch, nicht die negative
-# Differenz. Unter zwei Messpunkten bleibt das Tempo unbekannt statt null, sonst
-# behauptete eine frische Installation, es werde nichts verbraucht.
+# gewaltiger Sprung. Wechselt der Reset r, hat ein neues Fenster begonnen: dann zaehlt
+# der neue Stand selbst als Verbrauch. Ein Rueckgang ohne neuen Reset ist kein Reset,
+# sondern ein veralteter Stand: gezaehlt wird nur, was ueber den bisherigen Hoechststand
+# im Fenster hinausgeht. Punkte ohne r stammen aus aelteren
+# Versionen, die genau das nicht unterscheiden konnten, und bleiben aussen vor. Unter
+# zwei Messpunkten bleibt das Tempo unbekannt statt null, sonst behauptete eine frische
+# Installation, es werde nichts verbraucht.
 burn_24h=""
 burn_sum=0
 burn_known=0
 for hist_f in "$acct_dir"/*.history; do
   [ -f "$hist_f" ] || continue
   hist_d=$(jq -s -r --argjson from "$((NOW - 86400))" '
-    map(select(.t >= $from)) | sort_by(.t)
+    map(select(.t >= $from and .r)) | sort_by(.t)
     | if length < 2 then "?"
-      else . as $r
-        | ([range(1; ($r | length))
-            | ($r[.].u - $r[. - 1].u) as $step
-            | if $step >= 0 then $step else $r[.].u end] | add | tostring)
+      else reduce .[1:][] as $p ({r: .[0].r, top: .[0].u, sum: 0};
+          if $p.r == .r then .sum += ([$p.u - .top, 0] | max) | .top = ([.top, $p.u] | max)
+          else .sum += $p.u | .r = $p.r | .top = $p.u end)
+        | .sum | tostring
       end' "$hist_f" 2>/dev/null) || hist_d="?"
   [ "$hist_d" = "?" ] && continue
   burn_sum=$(awk -v a="$burn_sum" -v b="$hist_d" 'BEGIN{printf "%.2f", a + b}')
@@ -364,18 +407,30 @@ fi
 # darunter, laeuft nichts leer. Darueber bleiben Rest / (Tempo - Nachfuellrate) Tage. Die
 # Rechnung glaettet die einzelnen Resets zu einem gleichmaessigen Zufluss und liegt
 # deshalb um Stunden daneben, wenn ein Reset unmittelbar bevorsteht.
+# Dahinter steht die Luft "+N/d": so viele Punkte pro Tag mehr, bis bei jedem Reset
+# nichts mehr uebrig ist. Das Soll-Tempo ist die strengste Frist: nach Reset sortiert
+# muss bis zu jedem Reset der Rest aller Fenster weg sein, die bis dahin enden. Das
+# setzt voraus, dass zuerst der Account mit dem naechsten Reset verbraucht wird, also
+# dem Wechselsignal gefolgt wird.
 if [ "$acct_n" -ge 2 ]; then
   if [ -z "$burn_24h" ]; then
     seg_daily="${C_SEP}rw ?${RESET}"
   else
-    rest=$(echo "$accounts" | jq -r 'map(100 - .wk_used) | add')
-    seg_daily=$(awk -v rest="$rest" -v rate="$burn_24h" -v n="$acct_n" \
+    read -r rest need <<< "$(echo "$accounts" | jq -r '
+      sort_by(.wk_days)
+      | reduce .[] as $a ({cum: 0, need: 0};
+          .cum += (100 - $a.wk_used)
+          | .need = ([.need, .cum / $a.wk_days] | max))
+      | "\(.cum) \(.need)"')"
+    seg_daily=$(awk -v rest="$rest" -v need="$need" -v rate="$burn_24h" -v n="$acct_n" \
       -v ok="$C_CTX_OK" -v mid="$C_CTX" -v warn="$C_WARN" -v rst="$RESET" 'BEGIN{
       refill = n * 100 / 7
-      if (rate <= refill) { printf "%srw oo%s", ok, rst; exit }
+      spare = int(need - rate + 0.5)
+      extra = (spare > 0) ? sprintf(" +%d/d", spare) : ""
+      if (rate <= refill) { printf "%srw oo%s%s", ok, extra, rst; exit }
       days = rest / (rate - refill)
       col = (days < 1) ? warn : ((days < 3) ? mid : ok)
-      printf "%srw %.1fd%s", col, days, rst
+      printf "%srw %.1fd%s%s", col, days, extra, rst
     }')
   fi
 fi
@@ -392,16 +447,14 @@ seg_switch=""
 if [ "$acct_n" -ge 2 ] && [ -n "$acct_uuid" ]; then
   switch_to=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
     ((map(select(.uuid == $u)) | first) // {}) as $me
-    | (if ($me.wk_reset // 0) > $now then ($me.wk_reset - $now) / 86400 else 7 end) as $me_days
-    | ((100 - ($me.wk_used // 0)) / $me_days) as $me_decay
+    | ((100 - ($me.wk_used // 0)) / ($me.wk_days // 7)) as $me_decay
     | ((($me.fh_used // 0) >= 95) or (($me.wk_used // 0) >= 95)) as $me_done
     | [ to_entries[]
         | select(.value.uuid != $u)
         | (("ABCDEFGH" | split(""))[.key]) as $lbl
         | (if .value.fh_reset <= $now then 0 else .value.fh_used end) as $fh
         | select($fh < 95)
-        | (if .value.wk_reset > $now then (.value.wk_reset - $now) / 86400 else 7 end) as $days
-        | ((100 - .value.wk_used) / $days) as $decay
+        | ((100 - .value.wk_used) / .value.wk_days) as $decay
         | select($me_done or ($decay > $me_decay))
         | {lbl: $lbl, decay: $decay}
       ]
@@ -418,15 +471,12 @@ if [ -n "$weekly" ]; then
   col=$(pct_color "$w_val" 90)
   seg_weekly="${col}wk ${w_val}%${RESET}"
   # Ab zwei Accounts steht hinter jedem Wert die Restlaufzeit seines Fensters. Damit
-  # laesst sich das Wechselsignal nachrechnen, statt ihm glauben zu muessen. Ein Fenster,
-  # dessen resets_at verstrichen ist, bekommt volle sieben Tage: es startet erst mit dem
-  # naechsten Prompt in diesem Account.
+  # laesst sich das Wechselsignal nachrechnen, statt ihm glauben zu muessen.
   if [ "$acct_n" -ge 2 ]; then
-    wk_all=$(echo "$accounts" | jq -r --argjson now "$NOW" '
+    wk_all=$(echo "$accounts" | jq -r '
       to_entries[]
       | (("ABCDEFGH" | split(""))[.key]) as $lbl
-      | (if .value.wk_reset > $now then (.value.wk_reset - $now) / 86400 else 7 end) as $days
-      | "\($lbl) \(.value.wk_used)% (\(($days * 10 | round) / 10)d)"' | tr '\n' ' ')
+      | "\($lbl) \(.value.wk_used)% (\((.value.wk_days * 10 | round) / 10)d)"' | tr '\n' ' ')
     seg_weekly="${col}wk ${wk_all% }${RESET}"
   fi
 fi
