@@ -49,7 +49,8 @@ shopt -s nullglob
 # Ablaufzeitpunkt und TTL des Prompt-Caches nennt der Payload direkt. Das ersetzt die
 # Rechnung ueber das Transcript, die denselben Wert nur nachbaut.
 # opt faengt Fehler je Feld ab: Aendert Claude Code den Typ eines Feldes, fehlt nur
-# dieses, statt dass der ganze Lauf leer ausgeht. Zeilenumbruch und Trenner im Wert
+# dieses, statt dass der ganze Lauf leer ausgeht. Felder, mit denen bash rechnet, laufen
+# durch numbers: ein String in einer bash-Rechnung braeche das ganze Segment ab. Zeilenumbruch und Trenner im Wert
 # wuerden alle folgenden Felder verschieben und werden zu Leerzeichen.
 IFS="$FIELD_SEP" read -r rate_limits_json captured_at cwd model total_tok used_pct used_tok \
   five_h five_h_reset weekly weekly_opus weekly_reset vim_mode worktree effort \
@@ -61,7 +62,7 @@ IFS="$FIELD_SEP" read -r rate_limits_json captured_at cwd model total_tok used_p
     opt(.workspace.current_dir // .cwd),
     opt(.model.display_name),
     opt(.context_window.context_window_size // .context_window.total_tokens
-        // .context_window.max_tokens),
+        // .context_window.max_tokens | numbers),
     opt(.context_window.used_percentage | round),
     opt(.context_window as $cw
         | (($cw.current_usage // {}) as $u
@@ -71,14 +72,14 @@ IFS="$FIELD_SEP" read -r rate_limits_json captured_at cwd model total_tok used_p
           else $cw.used_percentage / 100
                * ($cw.context_window_size // $cw.total_tokens // $cw.max_tokens) | floor end),
     opt(.rate_limits.five_hour.used_percentage // empty | round),
-    opt(.rate_limits.five_hour.resets_at),
+    opt(.rate_limits.five_hour.resets_at | numbers),
     opt(max_of(.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage) | round),
     opt(max_of(.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage) | round),
     opt(max_of(.rate_limits.weekly.resets_at, .rate_limits.seven_day.resets_at)),
     opt(.vim.mode),
     opt(.worktree.name // .workspace.git_worktree),
     opt(.effort.level),
-    opt(.prompt_cache.expires_at),
+    opt(.prompt_cache.expires_at | numbers),
     opt(.prompt_cache.ttl),
     opt(.transcript_path)
   ] | join("\u001f")' 2>/dev/null)"
@@ -296,7 +297,6 @@ if [ "${#history_files[@]}" -gt 0 ]; then
   IFS="$FIELD_SEP" read -r burn_24h runway_days runway_tier runway_spare \
     <<< "$(jq -n -R -r --argjson from "$((NOW - 86400))" --argjson rest "${rest:-0}" \
     --argjson need "${need:-0}" --argjson accounts "$acct_n" '
-    def one_decimal: (. * 10 | round) as $tenths | "\($tenths / 10 | floor).\($tenths % 10)";
     [inputs | (try fromjson catch null) as $point | select($point | type == "object")
      | $point + {file: input_filename}]
     | map(select(.t >= $from and .r))
@@ -313,7 +313,7 @@ if [ "${#history_files[@]}" -gt 0 ]; then
         | [$rate]
           + (if $rate <= $refill then ["oo", "ok"]
              else ($rest / ($rate - $refill)) as $days
-               | [($days | one_decimal),
+               | [$days,
                   (if $days < 1 then "warn" elif $days < 3 then "mid" else "ok" end)]
              end)
           + [($need - $rate + 0.5 | floor)]
@@ -326,9 +326,19 @@ fi
 # Session. Ein Worktree oder Submodul hat statt des Ordners .git eine Datei mit
 # "gitdir: <pfad>". Ein losgeloester HEAD zeigt die ersten sieben Zeichen des Commits;
 # git selbst nimmt in grossen Repos mehr, damit die Kurzform eindeutig bleibt.
+# Ein relativer Pfad wird erst absolut: ohne Schraegstrich kaeme die Suche nie oben an.
+# Ein Repo im Reftable-Format fuehrt in HEAD nur einen Platzhalter, dort fragt es git.
+# Nicht erkannt werden ein nacktes Repo als Arbeitsverzeichnis und ein Symlink, dessen
+# Ziel in einem Repo liegt.
 read_git_branch() {
   local dir=$1 git_dir="" head_line
   branch=""
+  case "$dir" in
+    /*) ;;
+    *)  dir="$PWD/$dir" ;;
+  esac
+  # Wie git -C: ein Ordner, den es nicht gibt, hat keinen Branch.
+  [ -d "$dir" ] || return 0
   while :; do
     if [ -d "$dir/.git" ]; then
       git_dir="$dir/.git"
@@ -336,19 +346,25 @@ read_git_branch() {
     fi
     if [ -f "$dir/.git" ]; then
       read -r head_line < "$dir/.git"
+      head_line=${head_line%$'\r'}
       git_dir=${head_line#gitdir: }
       [ "${git_dir#/}" = "$git_dir" ] && git_dir="$dir/$git_dir"
       break
     fi
-    { [ -z "$dir" ] || [ "$dir" = "/" ]; } && return 0
+    [ -z "$dir" ] && return 0
     dir=${dir%/*}
   done
   [ -f "$git_dir/HEAD" ] || return 0
   read -r head_line < "$git_dir/HEAD"
+  head_line=${head_line%$'\r'}
   case "$head_line" in
     "ref: "*) branch=${head_line#ref: } branch=${branch#refs/heads/} ;;
     *)        branch=${head_line:0:7} ;;
   esac
+  if [ "$branch" = ".invalid" ]; then
+    branch=$(git -C "$dir" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null \
+             || git -C "$dir" --no-optional-locks rev-parse --short HEAD 2>/dev/null)
+  fi
 }
 read_git_branch "${cwd:-$PWD}"
 
@@ -385,7 +401,7 @@ col="" bar="" used_fmt="" total_fmt="" line1="" line2="" line3="" line4=""
 
 # --- Hilfsfunktion: Tokens hübsch formatieren (z.B. 48400 -> 48.4k, 1000000 -> 1M) ---
 format_tokens() {
-  local target=$1 tokens=$2 divisor unit tenths
+  local target=$1 tokens=$2 divisor unit scaled
   if [ -z "$tokens" ]; then
     printf -v "$target" '%s' ""
     return
@@ -396,12 +412,11 @@ format_tokens() {
     printf -v "$target" '%d' "$tokens"
     return
   fi
-  tenths=$(( (tokens * 10 + divisor / 2) / divisor ))
-  if [ $((tenths % 10)) -eq 0 ]; then
-    printf -v "$target" '%d%s' $((tenths / 10)) "$unit"
-  else
-    printf -v "$target" '%d.%d%s' $((tenths / 10)) $((tenths % 10)) "$unit"
-  fi
+  # %.1f auf den exakten Dezimalwert, damit Gleichstaende wie 1250 -> 1.2k so runden wie
+  # bisher. Das printf ist eingebaut, es kostet keinen Prozess.
+  printf -v scaled '%d.%0*d' $((tokens / divisor)) $((${#divisor} - 1)) $((tokens % divisor))
+  printf -v scaled '%.1f' "$scaled"
+  printf -v "$target" '%s%s' "${scaled%.0}" "$unit"
 }
 
 # --- Segment 1: Verzeichnis (Home als ~) ---
@@ -542,7 +557,7 @@ if [ "$acct_n" -ge 2 ]; then
     extra=""
     [ "$runway_spare" -gt 0 ] && extra=" +${runway_spare}/d"
     runway_label="$runway_days"
-    [ "$runway_days" = oo ] || runway_label="${runway_days}d"
+    [ "$runway_days" = oo ] || printf -v runway_label '%.1fd' "$runway_days"
     seg_daily="${rcol}rw ${runway_label}${extra}${RESET}"
   fi
 fi

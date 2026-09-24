@@ -39,11 +39,33 @@ expect_branch worktree "$sandbox/wt" wt-zweig
 git_quiet checkout --detach
 expect_branch losgeloest "$sandbox/repo" "$detached_sha"
 
+# Ein relativer Pfad darf die Suche nach .git nicht endlos laufen lassen. Der Lauf
+# bekommt drei Sekunden, dann gilt er als haengend.
+relative_out="$sandbox/relativ.txt"
+branch_line "proj/x" > "$relative_out" &
+relative_pid=$!
+for _ in $(seq 1 30); do
+  kill -0 "$relative_pid" 2>/dev/null || break
+  sleep 0.1
+done
+if kill -0 "$relative_pid" 2>/dev/null; then
+  pkill -P "$relative_pid" 2>/dev/null
+  kill "$relative_pid" 2>/dev/null
+  printf 'FEHLER branch relativ: Lauf haengt bei relativem cwd\n'
+  failed=1
+elif [ "$(cat "$relative_out")" != "proj/x" ]; then
+  printf 'FEHLER branch relativ: erwartet "proj/x", bekommen "%s"\n' "$(cat "$relative_out")"
+  failed=1
+fi
+
+printf 'gitdir: %s\r\n' "$sandbox/repo/.git/worktrees/wt" > "$sandbox/wt/.git"
+expect_branch crlf "$sandbox/wt" wt-zweig
+
 actual=$(branch_line "$sandbox")
 if [ "$actual" != "$sandbox" ]; then
   printf 'FEHLER branch ohne-repo: erwartet "%s", bekommen "%s"\n' "$sandbox" "$actual"
   failed=1
 fi
 
-[ "$failed" = 0 ] && printf 'ok     branch (Unterordner, Worktree, losgeloest, ohne Repo)\n'
+[ "$failed" = 0 ] && printf 'ok     branch (Unterordner, Worktree, losgeloest, relativ, CRLF, ohne Repo)\n'
 exit "$failed"
