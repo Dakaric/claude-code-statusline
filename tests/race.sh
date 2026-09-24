@@ -24,7 +24,7 @@ count_missing() {
     line=$(HOME="$sandbox" NO_COLOR=1 STATUSLINE_NOW="$test_now" \
       env -u ENABLE_PROMPT_CACHING_1H bash "$root/statusline.sh" \
       < "$root/tests/fixtures/zwei-accounts.json" | tail -1)
-    case "$line" in *"B frei"*) ;; *) echo "$line" ;; esac
+    case "$line" in *"B free"*) ;; *) echo "$line" ;; esac
   done
 }
 
