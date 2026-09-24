@@ -2,6 +2,13 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.3.3 — 2026-09-24
+
+### Fixed
+
+- **The status line no longer chokes a busy machine.** Every open session runs the script once a second, and each run started 33 `jq` processes. With a dozen sessions that added up to hundreds of process starts per second, runs took longer than the refresh interval, got cut off and printed nothing. A run now starts at most six, most of the time five. `tests/forks.sh` keeps it that way.
+- **Accounts keep their letters.** A run that failed to read an existing snapshot rewrote it with `first_seen` set to now, and since the letters follow `first_seen`, A and B swapped places. A run that cannot read an existing snapshot now leaves it alone, and a stray empty or broken file in the folder no longer gets in the way.
+
 ## 1.3.2 — 2026-09-24
 
 ### Fixed

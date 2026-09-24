@@ -14,10 +14,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint with shellcheck
-        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/freeze.sh tests/setup/*.sh
+        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/freeze.sh tests/setup/*.sh
 
       - name: Run tests
         run: bash tests/run.sh
 
       - name: Run concurrency test
         run: bash tests/race.sh
+
+      - name: Run process budget test
+        run: bash tests/forks.sh
+
+      - name: Run snapshot robustness test
+        run: bash tests/snapshots.sh

@@ -137,7 +137,7 @@ The next Claude Code session picks it up. That's the whole install.
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.3.1
+ver=v1.3.3
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
