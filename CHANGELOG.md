@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.3.1 — 2026-09-24
+
+### Fixed
+
+- **An account that got another account's numbers now recovers by itself.** Version 1.2 filed readings under whoever was logged in, and an account damaged that way kept showing the other account's weekly figure after the update, because its stored window looked newer than its real one. Two accounts sharing the same weekly reset now count as a sign of exactly that damage, and the logged-in account's next real reading replaces the stored one.
+
 ## 1.3.0 — 2026-09-24
 
 ### Added
