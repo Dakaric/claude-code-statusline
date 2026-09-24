@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.3.3"
+VERSION="1.3.4"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -192,7 +192,8 @@ fi
 # rest/need: Runway, siehe Segment 5a2. switch_to: Wechselsignal, siehe Segment 5a3.
 # wk_all: Wochenstand samt Restlaufzeit je Account. hist_u/hist_r: der eigene Stand fuer
 # die Historie, aus dem Snapshot statt aus dem Payload, dort ist ein veralteter Stand
-# schon aussortiert. my_fh_used/my_fh_reset: das eigene 5h-Fenster laut Snapshot.
+# schon aussortiert. my_fh_used/my_fh_reset: das eigene 5h-Fenster laut Snapshot,
+# my_fh_reset leer, wenn der Account nie eines hatte.
 snapshot_files=("$acct_dir"/*.json)
 IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_u hist_r \
   my_fh_used my_fh_reset \
@@ -234,7 +235,7 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
       (if $me.uuid then ($me.wk_used | round) else "" end),
       (if $me.uuid then $me.wk_reset else "" end),
       (if $me.uuid then ($me.fh_used | round) else "" end),
-      (if $me.uuid then $me.fh_reset else "" end)
+      ($me.rate_limits.five_hour.resets_at | numbers) // ""
     ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 acct_n="${acct_n:-0}"
 
@@ -242,8 +243,10 @@ acct_n="${acct_n:-0}"
 # mit der naechsten Antwort dieser Session. Bis dahin gilt der Snapshot, den andere
 # Sessions desselben Accounts schon aktualisiert haben; ist auch dort das Fenster vorbei,
 # ist es frei. Ohne Wochenwert hat der Payload gar keine Limits, dann bleibt es leer.
+# Ohne Besitzer gehoert der Wochenwert einem anderen Account als dem Snapshot, dann
+# bleibt es ebenfalls leer.
 five_h_free=0
-if [ -z "$five_h" ] && [ -n "$weekly" ] && [ -n "$my_fh_reset" ]; then
+if [ -z "$five_h" ] && [ -n "$weekly" ] && [ -n "$acct_owner" ] && [ -n "$my_fh_reset" ]; then
   if [ "${my_fh_reset%%.*}" -gt "$NOW" ]; then
     five_h="$my_fh_used"
     five_h_reset="$my_fh_reset"
