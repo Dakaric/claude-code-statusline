@@ -7,6 +7,7 @@ What changed in each release, in plain words. Newest first.
 ### Fixed
 
 - **The status line no longer chokes a busy machine.** Every open session runs the script once a second, and each run started 41 processes: 33 of them `jq`, the rest `awk`, `sed`, `git` and subshells. With a dozen sessions that added up to hundreds of process starts per second, runs took longer than the refresh interval, got cut off and printed nothing. A run now starts about ten: the `jq` calls are bundled, the arithmetic runs in bash, and the branch comes straight from `.git/HEAD`. `tests/forks.sh` keeps it that way.
+- **The 5h segment no longer vanishes after the window rolls over.** Claude Code drops an expired five-hour window from the payload and reports the new one only with the session's next answer, so an idle session lost the whole segment. It now falls back to the stored snapshot, which other sessions of the same account keep current, and shows `free` when that window is over too.
 - **Accounts keep their letters.** A run that failed to read an existing snapshot rewrote it with `first_seen` set to now, and since the letters follow `first_seen`, A and B swapped places. A run that cannot read an existing snapshot now leaves it alone, and a stray empty or broken file in the folder no longer gets in the way.
 
 ## 1.3.2 — 2026-09-24
