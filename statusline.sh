@@ -192,9 +192,10 @@ fi
 # rest/need: Runway, siehe Segment 5a2. switch_to: Wechselsignal, siehe Segment 5a3.
 # wk_all: Wochenstand samt Restlaufzeit je Account. hist_u/hist_r: der eigene Stand fuer
 # die Historie, aus dem Snapshot statt aus dem Payload, dort ist ein veralteter Stand
-# schon aussortiert.
+# schon aussortiert. my_fh_used/my_fh_reset: das eigene 5h-Fenster laut Snapshot.
 snapshot_files=("$acct_dir"/*.json)
 IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_u hist_r \
+  my_fh_used my_fh_reset \
   <<< "$(jq -n -R -r --arg u "$acct_uuid" --argjson now "$NOW" "$SNAPSHOTS_JQ"'
   def letter: ("ABCDEFGH" | split(""))[.];
   def window_open(w): (w.resets_at // 0) > $now;
@@ -231,9 +232,25 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
        | sort_by(-.decay) | first | .lbl // ""),
       ($accts | map("\(.lbl) \(.wk_used)% (\((.wk_days * 10 | round) / 10)d)") | join(" ")),
       (if $me.uuid then ($me.wk_used | round) else "" end),
-      (if $me.uuid then $me.wk_reset else "" end)
+      (if $me.uuid then $me.wk_reset else "" end),
+      (if $me.uuid then ($me.fh_used | round) else "" end),
+      (if $me.uuid then $me.fh_reset else "" end)
     ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 acct_n="${acct_n:-0}"
+
+# Claude Code nimmt ein abgelaufenes 5h-Fenster aus dem Payload und meldet das neue erst
+# mit der naechsten Antwort dieser Session. Bis dahin gilt der Snapshot, den andere
+# Sessions desselben Accounts schon aktualisiert haben; ist auch dort das Fenster vorbei,
+# ist es frei. Ohne Wochenwert hat der Payload gar keine Limits, dann bleibt es leer.
+five_h_free=0
+if [ -z "$five_h" ] && [ -n "$weekly" ] && [ -n "$my_fh_reset" ]; then
+  if [ "${my_fh_reset%%.*}" -gt "$NOW" ]; then
+    five_h="$my_fh_used"
+    five_h_reset="$my_fh_reset"
+  else
+    five_h_free=1
+  fi
+fi
 
 # Liest t, u und r der letzten Historienzeile ohne eigenen Prozess. Die Zeilen schreibt
 # dieses Skript selbst mit printf, ihr Format ist fest; Zeilen aelterer Versionen haben
@@ -492,7 +509,13 @@ fi
 
 # --- Segment 5: 5h-Rate-Limit (immer wenn vorhanden) ---
 seg_rate=""
-if [ -n "$five_h" ]; then
+if [ "$five_h_free" = 1 ]; then
+  seg_rate="${C_CTX_OK}5h free${RESET}"
+  if [ "$acct_n" -ge 2 ]; then
+    seg_rate="${C_CTX_OK}5h ${acct_lbl} free${RESET}"
+    [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
+  fi
+elif [ -n "$five_h" ]; then
   pct_color col "$five_h"
   # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
   cd=""
