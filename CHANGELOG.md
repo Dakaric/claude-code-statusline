@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.4.0 — 2026-09-24
+
+### Added
+
+- **The runway shows the pace it is based on.** `rw 11.9d @38/d` reads: at 38 points a day across all accounts, measured over the last 24 hours, the combined budget lasts 11.9 days. Without the pace the runway was a number you had to take on trust.
+
 ## 1.3.4 — 2026-09-24
 
 ### Fixed

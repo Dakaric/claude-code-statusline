@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.3.4"
+VERSION="1.4.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -305,7 +305,8 @@ fi
 # Nachfuellrate) Tage. Die Rechnung glaettet die einzelnen Resets zu einem
 # gleichmaessigen Zufluss und liegt deshalb um Stunden daneben, wenn ein Reset
 # unmittelbar bevorsteht.
-# Dahinter steht die Luft "+N/d": so viele Punkte pro Tag mehr, bis bei jedem Reset
+# Das Tempo selbst steht als "@N/d" dahinter, damit die Runway nachvollziehbar bleibt.
+# Danach folgt die Luft "+N/d": so viele Punkte pro Tag mehr, bis bei jedem Reset
 # nichts mehr uebrig ist. Das Soll-Tempo need ist die strengste Frist: nach Reset
 # sortiert muss bis zu jedem Reset der Rest aller Fenster weg sein, die bis dahin enden.
 # Das setzt voraus, dass zuerst der Account mit dem naechsten Reset verbraucht wird,
@@ -580,8 +581,8 @@ if [ "$acct_n" -ge 2 ]; then
       mid)  rcol="$C_CTX" ;;
       *)    rcol="$C_CTX_OK" ;;
     esac
-    extra=""
-    [ "$runway_spare" -gt 0 ] && extra=" +${runway_spare}/d"
+    printf -v extra ' @%.0f/d' "$burn_24h"
+    [ "$runway_spare" -gt 0 ] && extra+=" +${runway_spare}/d"
     runway_label="$runway_days"
     [ "$runway_days" = oo ] || printf -v runway_label '%.1fd' "$runway_days"
     seg_daily="${rcol}rw ${runway_label}${extra}${RESET}"

@@ -55,7 +55,7 @@ The split is the point. The first two lines barely change within a session, the 
 | Weekly | `wk 18%` | when present |
 | Weekly Opus | `wk-opus 7%` | when present |
 | Daily pacing | `d +6% (3.2d)` | with one known account |
-| Runway | `rw 2.4d`, `rw oo +8/d` | with two or more known accounts |
+| Runway | `rw 2.4d @52/d`, `rw oo @20/d +8/d` | with two or more known accounts |
 | Account switch | `-> B` | when another account is the better place to work |
 | Context window | `ctx ███░░░░░░░ 28% (280k/1M)` | progress bar, green → yellow → red as it fills |
 
@@ -92,16 +92,16 @@ If you rotate between several Claude subscriptions, one account's seven-day wind
 Accounts are labelled `A`, `B`, `C` in the order they were first seen. The UUID stays in the filename and is never displayed.
 
 ```
-5h A 87% (0h12m) B free | wk A 24% (5.1d) B 78% (0.9d) | rw 1.8d | -> B
+5h A 87% (0h12m) B free | wk A 24% (5.1d) B 78% (0.9d) | rw 1.8d @83/d | -> B
 ```
 
 **Numbers land on the account they came from, not on the one you're logged into.** `/login` is global, but the limits in a session's payload come from that session's last reply, so sessions that were open before you switched keep reporting the old account. The status line tells them apart by the weekly `resets_at`, which is a different moment for every account. A reading that matches no known window and can't be a new window of the logged-in account is dropped rather than filed under the wrong name. Within one window usage never goes down, so a lower reading than the stored one is an older reply and is ignored as well.
 
 **The inactive account's numbers are exact.** Nothing can move its usage without a session reporting it, and if its window expires while it sits idle, it is back to zero: its own `resets_at` says so.
 
-**`rw 1.8d`, the runway.** Your combined budget refills at `N × 100` points per seven days: 28.6 points a day with two accounts. Burn less than that and you never run dry, which the segment shows as `rw oo`. Burn more and `rw` is how many days the remaining budget lasts at your pace over the last 24 hours, read from a per-account time series next to each snapshot. `rw ?` means there aren't two measurements yet. The maths smooths the individual resets into a steady trickle, so it can be off by hours when a reset is imminent.
+**`rw 1.8d @83/d`, the runway.** Your combined budget refills at `N × 100` points per seven days: 28.6 points a day with two accounts. Burn less than that and you never run dry, which the segment shows as `rw oo`. Burn more and `rw` is how many days the remaining budget lasts at your pace over the last 24 hours, read from a per-account time series next to each snapshot. That pace sits right behind it: `@83/d` means 83 points burned across all accounts in the last 24 hours. `rw ?` means there aren't two measurements yet. The maths smooths the individual resets into a steady trickle, so it can be off by hours when a reset is imminent.
 
-**`rw oo +8/d`, the headroom.** Not running dry is only half the goal; the other half is not leaving budget on the table when a window resets. The target pace is the strictest deadline: sort the accounts by reset, and by each reset everything in the windows ending up to then has to be spent. `+8/d` means you could burn 8 more points a day and still hit every reset with nothing left. It assumes you drain the account that resets first, which is where the switch hint points. The headroom can also sit next to a finite runway: `rw 14.5d +50/d` means you're above the refill rate overall, yet one window closes soon with a lot left in it.
+**`rw oo @20/d +8/d`, the headroom.** Not running dry is only half the goal; the other half is not leaving budget on the table when a window resets. The target pace is the strictest deadline: sort the accounts by reset, and by each reset everything in the windows ending up to then has to be spent. `+8/d` means you could burn 8 more points a day and still hit every reset with nothing left. It assumes you drain the account that resets first, which is where the switch hint points. The headroom can also sit next to a finite runway: `rw 14.5d @40/d +50/d` means you're above the refill rate overall, yet one window closes soon with a lot left in it.
 
 **`-> B` — the switch hint.** It appears for either of two reasons: the account you're in is finished (5h or weekly at 95% or more), or more budget is expiring elsewhere than here. The second one is a rate: `remaining / days until reset` is what you'd have to spend per day for nothing to go to waste. An account with 20% left and a reset tomorrow beats one with 60% left and five days to go. Either way the hint only shows when the target has 5h capacity free — a full five-hour window makes the switch pointless no matter how much weekly budget is expiring there.
 
@@ -137,7 +137,7 @@ The next Claude Code session picks it up. That's the whole install.
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.3.4
+ver=v1.4.0
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
