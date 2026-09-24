@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.3.4 — 2026-09-24
+
+### Fixed
+
+- **The 5h fallback from 1.3.3 stays within its account.** When a reading could not be matched to an account, the line showed the logged-in account's five-hour window next to another account's weekly figure. It now shows no 5h segment in that case, as before. An account that never had a five-hour window no longer reads `free` either.
+
 ## 1.3.3 — 2026-09-24
 
 ### Fixed
