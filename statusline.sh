@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.3.2"
+VERSION="1.3.3"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -26,88 +26,135 @@ export LC_NUMERIC=C
 # Variable nicht gesetzt.
 NOW="${STATUSLINE_NOW:-$(date +%s)}"
 
-input=$(cat)
+# Liest stdin ohne cat: read gibt am Ende 1 zurueck, weil kein NUL kommt, der Inhalt
+# steht trotzdem vollstaendig in input.
+IFS= read -r -d '' input
+
+# Jede offene Session ruft das Skript jede Sekunde auf, und jeder jq-Aufruf ist ein
+# eigener Prozess. Deshalb liefert ein jq-Lauf viele Werte auf einmal, getrennt durch
+# das Steuerzeichen 0x1F, das in keinem Wert vorkommt. Anders als bei Tab oder
+# Leerzeichen faltet read aufeinanderfolgende Trenner nicht zusammen: ein leeres Feld
+# bleibt an seinem Platz, statt die folgenden zu verschieben.
+FIELD_SEP=$'\x1f'
+
+# Ein Glob ohne Treffer liefert eine leere Liste statt seines eigenen Musters. jq bekaeme
+# sonst einen Dateinamen mit Stern und braeche den ganzen Lauf ab.
+shopt -s nullglob
+
+# --- Daten aus JSON ---
+# In jq runden (Werte kommen als Float wie 7.000000000000001): bash rechnet nur mit
+# ganzen Zahlen. Fehlt current_usage, schaetzt used_tok aus Prozent und Gesamtgroesse.
+# weekly/weekly_opus tragen je nach CLI-Version unter wechselnden Keys den echten Wert
+# (z.B. weekly=0 neben seven_day=7) -> Maximum der vorhandenen Werte statt blinder Vorrang.
+# Ablaufzeitpunkt und TTL des Prompt-Caches nennt der Payload direkt. Das ersetzt die
+# Rechnung ueber das Transcript, die denselben Wert nur nachbaut.
+# opt faengt Fehler je Feld ab: Aendert Claude Code den Typ eines Feldes, fehlt nur
+# dieses, statt dass der ganze Lauf leer ausgeht. Felder, mit denen bash rechnet, laufen
+# durch numbers: ein String in einer bash-Rechnung braeche das ganze Segment ab. Zeilenumbruch und Trenner im Wert
+# wuerden alle folgenden Felder verschieben und werden zu Leerzeichen.
+IFS="$FIELD_SEP" read -r rate_limits_json captured_at cwd model total_tok used_pct used_tok \
+  five_h five_h_reset weekly weekly_opus weekly_reset vim_mode worktree effort \
+  cache_expires cache_ttl_lbl transcript <<< "$(echo "$input" | jq -r '
+  def opt(f): (try [f][0] catch null) // "" | tostring | gsub("[\n\u001f]"; " ");
+  def max_of(f): [f] | map(select(type == "number")) | max | values;
+  [ (.rate_limits // {} | tojson),
+    (now | tostring),
+    opt(.workspace.current_dir // .cwd),
+    opt(.model.display_name),
+    opt(.context_window.context_window_size // .context_window.total_tokens
+        // .context_window.max_tokens | numbers),
+    opt(.context_window.used_percentage | round),
+    opt(.context_window as $cw
+        | (($cw.current_usage // {}) as $u
+           | ($u.input_tokens // 0) + ($u.output_tokens // 0)
+             + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)) as $sum
+        | if $sum > 0 then $sum
+          else $cw.used_percentage / 100
+               * ($cw.context_window_size // $cw.total_tokens // $cw.max_tokens) | floor end),
+    opt(.rate_limits.five_hour.used_percentage // empty | round),
+    opt(.rate_limits.five_hour.resets_at | numbers),
+    opt(max_of(.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage) | round),
+    opt(max_of(.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage) | round),
+    opt(max_of(.rate_limits.weekly.resets_at, .rate_limits.seven_day.resets_at)),
+    opt(.vim.mode),
+    opt(.worktree.name // .workspace.git_worktree),
+    opt(.effort.level),
+    opt(.prompt_cache.expires_at | numbers),
+    opt(.prompt_cache.ttl),
+    opt(.transcript_path)
+  ] | join("\u001f")' 2>/dev/null)"
 
 # Jarvis-Cockpit: rate_limits-Snapshot rausschreiben. Das Agent-SDK liefert die
 # Auslastung nicht, nur dieser Statusline-Payload hat sie -> Jarvis liest die Datei.
-mkdir -p ~/.claude 2>/dev/null
-echo "$input" | jq -c '{rate_limits: (.rate_limits // {}), captured_at: now}' \
-  > ~/.claude/jarvis-rate-limits.json 2>/dev/null
-
-# --- Daten aus JSON ---
-cwd=$(echo "$input"          | jq -r '.workspace.current_dir // .cwd // ""')
-model=$(echo "$input"        | jq -r '.model.display_name // ""')
-total_tok=$(echo "$input"    | jq -r '.context_window.context_window_size // .context_window.total_tokens // .context_window.max_tokens // empty')
-used_pct=$(echo "$input"     | jq -r '.context_window.used_percentage // empty')
-# Aktuelle Tokennutzung aus current_usage summieren (präziser als percentage * size)
-used_tok=$(echo "$input" | jq -r '
-  (.context_window.current_usage // {}) as $u
-  | (($u.input_tokens // 0)
-     + ($u.output_tokens // 0)
-     + ($u.cache_creation_input_tokens // 0)
-     + ($u.cache_read_input_tokens // 0)) as $sum
-  | if $sum > 0 then $sum else empty end')
-# In jq runden (Werte kommen als Float wie 7.000000000000001) -> bash-printf sieht nie
-# einen Dezimalpunkt, der im deutschen Locale als "invalid number" -> 0 enden würde.
-five_h=$(echo "$input"       | jq -r '(.rate_limits.five_hour.used_percentage // empty) | round')
-# Reset-Zeitstempel des 5h-Limits (Epoch) -> verbleibende Restzeit als Countdown
-five_h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-# weekly/weekly_opus tragen je nach CLI-Version unter wechselnden Keys den echten Wert
-# (z.B. weekly=0 neben seven_day=7) -> Maximum der vorhandenen Werte statt blinder Vorrang.
-weekly=$(echo "$input"       | jq -r '[.rate_limits.weekly.used_percentage, .rate_limits.seven_day.used_percentage] | map(select(type=="number")) | max | values | round')
-weekly_opus=$(echo "$input"  | jq -r '[.rate_limits.weekly_opus.used_percentage, .rate_limits.seven_day_opus.used_percentage] | map(select(type=="number")) | max | values | round')
-# Reset-Zeitstempel der Wochen-Limits (Epoch) -> verstrichene Tage fürs Daily-Pacing
-weekly_reset=$(echo "$input" | jq -r '[.rate_limits.weekly.resets_at, .rate_limits.seven_day.resets_at] | map(select(type=="number")) | max | values')
-vim_mode=$(echo "$input"     | jq -r '.vim.mode // empty')
-# Ablaufzeitpunkt und TTL des Prompt-Caches nennt der Payload direkt. Das ersetzt die
-# Rechnung ueber das Transcript, die denselben Wert nur nachbaut.
-worktree=$(echo "$input"     | jq -r '.worktree.name // .workspace.git_worktree // empty')
-effort=$(echo "$input"       | jq -r '.effort.level // empty')
-cache_expires=$(echo "$input" | jq -r '.prompt_cache.expires_at // empty')
-cache_ttl_lbl=$(echo "$input" | jq -r '.prompt_cache.ttl // empty')
-transcript=$(echo "$input"   | jq -r '.transcript_path // empty')
+if [ -n "$rate_limits_json" ]; then
+  [ -d ~/.claude ] || mkdir -p ~/.claude 2>/dev/null
+  printf '{"rate_limits":%s,"captured_at":%s}\n' "$rate_limits_json" "$captured_at" \
+    > ~/.claude/jarvis-rate-limits.json 2>/dev/null
+fi
 
 # --- Account-Identitaet und Snapshot ---
 # Der Payload nennt den Account nicht, ~/.claude.json schon. Beides zusammen ergibt
 # einen Stand pro Account, aus dem sich der gerade inaktive spaeter ablesen laesst.
 # Ohne Limits im Payload wird nichts geschrieben, sonst wuerde eine Sitzung vor der
 # ersten API-Antwort einen echten Stand mit einem leeren ueberschreiben.
-acct_dir="$HOME/.claude/statusline-accounts"
-login_uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$HOME/.claude.json" 2>/dev/null)
-
+#
 # Der Login ist global, die Limits im Payload stammen aus der letzten Antwort dieser
 # Session. Nach einem Umloggen liefern offene Sessions also noch den alten Account.
 # Den verraet der Wochen-Reset: er ist je Account ein eigener Zeitpunkt. Passt er zu
 # einem bekannten Snapshot, gehoert der Stand dorthin; passt er zu mehreren, gewinnt
 # der Login. Passt er zu keinem, hat ein neues Fenster begonnen. Das kann nur das des
 # Logins sein, wenn dessen bekanntes Fenster schon vorbei ist; sonst bleibt der Besitzer
-# leer, und der Stand wird nirgends geschrieben.
+# leer ("-"), und der Stand wird nirgends geschrieben.
 # Ausnahme: Teilt der Login seinen Reset mit einem anderen Account, hat er frueher einen
 # fremden Stand abbekommen, denn nur dem Login wird je etwas zugeschrieben. Dann ersetzt
 # der neue Stand den Snapshot, statt mit ihm gemischt oder verworfen zu werden.
-acct_owner="$login_uuid"
-acct_replace=0
-if [ -n "$login_uuid" ] && [ -n "$weekly_reset" ]; then
-  read -r acct_owner acct_replace <<< "$(jq -s -r --arg login "$login_uuid" \
-    --argjson r "$weekly_reset" --argjson now "$NOW" '
-    map(select(.uuid)) as $all
-    | [$all[] | select(.rate_limits.seven_day.resets_at == $r) | .uuid] as $hits
-    | ($all | map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
-    | any($all[]; .uuid != $login and .rate_limits.seven_day.resets_at == $known) as $poisoned
-    | if any($hits[]; . == $login) then "\($login) 0"
-      elif ($hits | length) > 0 then "\($hits[0]) 0"
-      elif $poisoned then "\($login) 1"
-      elif $known > $now then "- 0"
-      else "\($login) 0" end' \
-    "$acct_dir"/*.json 2>/dev/null)" || true
-  [ -n "$acct_owner" ] || acct_owner="$login_uuid"
-  [ "$acct_owner" = "-" ] && acct_owner=""
-fi
+#
+# Derselbe Lauf liefert first_seen und die bisherigen Limits des Besitzers, dazu ob der
+# Snapshot des Logins gelesen wurde.
+acct_dir="$HOME/.claude/statusline-accounts"
+
+# Liest die Snapshots Datei fuer Datei. Eine leere, kaputte oder unlesbare Datei faellt
+# einzeln raus, statt jq ganz abbrechen zu lassen. Beide Account-Laeufe unten nutzen
+# diese Definition, jq braucht dafuer -R.
+# shellcheck disable=SC2016  # $line ist eine jq-Variable, die Shell soll sie nicht sehen
+SNAPSHOTS_JQ='def snapshots:
+  reduce inputs as $line ({}; .[input_filename] += $line + "\n")
+  | [.[] | try fromjson catch empty | select(type == "object" and .uuid)];'
+
+snapshot_files=("$acct_dir"/*.json)
+IFS="$FIELD_SEP" read -r login_read login_uuid acct_owner acct_replace first_seen old_limits \
+  <<< "$(jq -n -R -r --slurpfile claude "$HOME/.claude.json" --arg r "$weekly_reset" \
+    --argjson now "$NOW" "$SNAPSHOTS_JQ"'
+  ($claude[0].oauthAccount.accountUuid // "") as $login
+  | snapshots as $all
+  | ($all | map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
+  | (if $login == "" or $r == "" then [$login, 0]
+     else ($r | tonumber) as $reset
+       | [$all[] | select(.rate_limits.seven_day.resets_at == $reset) | .uuid] as $hits
+       | any($all[]; .uuid != $login and .rate_limits.seven_day.resets_at == $known) as $poisoned
+       | if any($hits[]; . == $login) then [$login, 0]
+         elif ($hits | length) > 0 then [$hits[0], 0]
+         elif $poisoned then [$login, 1]
+         elif $known > $now then ["-", 0]
+         else [$login, 0] end
+     end) as [$owner, $replace]
+  | ($all | map(select(.uuid == $owner)) | first) as $snapshot
+  | [any($all[]; .uuid == $login), $login, $owner, $replace, ($snapshot.first_seen // ""),
+     ($snapshot.rate_limits // {} | tojson)]
+  | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
+[ "$acct_owner" = "-" ] && acct_owner=""
 acct_uuid="${acct_owner:-$login_uuid}"
-if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
-  mkdir -p "$acct_dir"
-  acct_file="$acct_dir/${acct_uuid}.json"
-  first_seen=$(jq -r '.first_seen // empty' "$acct_file" 2>/dev/null)
+acct_file="$acct_dir/${acct_uuid}.json"
+
+# Geschrieben wird nur, wenn die Snapshots von Besitzer und Login gelesen wurden, soweit
+# es sie gibt. Fehlt der des Logins, stimmt die Zuordnung ueber den Reset nicht mehr.
+# Fehlt der des Besitzers, wuerde sein first_seen zu "jetzt": first_seen bestimmt die
+# Reihenfolge der Labels, aus A wuerde B. Faellt ein Lauf unter Last mitten im Lesen
+# aus, bleibt deshalb alles, wie es war.
+if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ] \
+  && { [ -n "$first_seen" ] || [ ! -e "$acct_file" ]; } \
+  && { [ "$login_read" = true ] || [ ! -e "$acct_dir/${login_uuid}.json" ]; }; then
+  [ -d "$acct_dir" ] || mkdir -p "$acct_dir"
   [ -n "$first_seen" ] || first_seen="$NOW"
   # Erst schreiben, dann umbenennen. Ein direktes "> $acct_file" leert die Datei vorab,
   # und eine parallel laufende Statusline (jede Session, jede Sekunde) liest sie in
@@ -117,9 +164,7 @@ if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
   # innerhalb eines Fensters sinkt der Stand nie, ein niedrigerer stammt also aus einer
   # Session, deren letzte Antwort aelter ist als der Snapshot.
   acct_tmp="${acct_file}.tmp.$$"
-  old_limits="{}"
-  [ "$acct_replace" = 1 ] || old_limits=$(jq -c '.rate_limits // {}' "$acct_file" 2>/dev/null)
-  [ -n "$old_limits" ] || old_limits="{}"
+  { [ "$acct_replace" = 1 ] || [ -z "$old_limits" ]; } && old_limits="{}"
   if echo "$input" | jq -c \
     --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
     --argjson old "$old_limits" '
@@ -137,44 +182,82 @@ if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ]; then
   fi
 fi
 
-# Alle bekannten Accounts, nach erstem Auftreten sortiert. Der Index im Array ist das
-# Label: 0 ist A, 1 ist B, 2 ist C. Ein Fenster, dessen resets_at verstrichen ist, gilt
-# als unbenutzt: Claude Code entfernt es dann aus dem Payload, und das naechste startet
-# erst mit dem naechsten Prompt in diesem Account. Seine Restlaufzeit wk_days ist dann
-# volle sieben Tage.
-accounts="[]"
-acct_n=0
-if [ -d "$acct_dir" ]; then
-  accounts=$(jq -s -c --argjson now "$NOW" '
-    map(select(.uuid))
-    | sort_by(.first_seen)
-    | map(. + {
-        wk_used:  (if (.rate_limits.seven_day.resets_at // 0) > $now
-                   then (.rate_limits.seven_day.used_percentage // 0) else 0 end),
-        wk_reset: (.rate_limits.seven_day.resets_at // 0),
-        wk_days:  (if (.rate_limits.seven_day.resets_at // 0) > $now
-                   then (.rate_limits.seven_day.resets_at - $now) / 86400 else 7 end),
-        fh_used:  (if (.rate_limits.five_hour.resets_at // 0) > $now
-                   then (.rate_limits.five_hour.used_percentage // 0) else 0 end),
-        fh_reset: (.rate_limits.five_hour.resets_at // 0)
-      })' "$acct_dir"/*.json 2>/dev/null) || accounts="[]"
-  [ -n "$accounts" ] || accounts="[]"
-  acct_n=$(echo "$accounts" | jq -r 'length')
-fi
+# --- Alle bekannten Accounts und was die Zeile ueber sie zeigt ---
+# Nach erstem Auftreten sortiert, der Index ist das Label: 0 ist A, 1 ist B, 2 ist C.
+# Ein Fenster, dessen resets_at verstrichen ist, gilt als unbenutzt: Claude Code
+# entfernt es dann aus dem Payload, und das naechste startet erst mit dem naechsten
+# Prompt in diesem Account. Seine Restlaufzeit wk_days ist dann volle sieben Tage.
+#
+# others: 5h-Stand der uebrigen Accounts, "free", wenn ihr Fenster durch ist.
+# rest/need: Runway, siehe Segment 5a2. switch_to: Wechselsignal, siehe Segment 5a3.
+# wk_all: Wochenstand samt Restlaufzeit je Account. hist_u/hist_r: der eigene Stand fuer
+# die Historie, aus dem Snapshot statt aus dem Payload, dort ist ein veralteter Stand
+# schon aussortiert.
+snapshot_files=("$acct_dir"/*.json)
+IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_u hist_r \
+  <<< "$(jq -n -R -r --arg u "$acct_uuid" --argjson now "$NOW" "$SNAPSHOTS_JQ"'
+  def letter: ("ABCDEFGH" | split(""))[.];
+  def window_open(w): (w.resets_at // 0) > $now;
+  snapshots
+  | sort_by(.first_seen)
+  | map(.rate_limits.seven_day as $wk | .rate_limits.five_hour as $fh | . + {
+      wk_used:  (if window_open($wk) then ($wk.used_percentage // 0) else 0 end),
+      wk_reset: ($wk.resets_at // 0),
+      wk_days:  (if window_open($wk) then ($wk.resets_at - $now) / 86400 else 7 end),
+      fh_used:  (if window_open($fh) then ($fh.used_percentage // 0) else 0 end),
+      fh_reset: ($fh.resets_at // 0)
+    })
+  | to_entries | map(.value + {lbl: (.key | letter)}) as $accts
+  | (($accts | map(select(.uuid == $u)) | first) // {}) as $me
+  | ($accts | map(select(.uuid != $u))) as $others
+  | ((100 - ($me.wk_used // 0)) / ($me.wk_days // 7)) as $me_decay
+  | ((($me.fh_used // 0) >= 95) or (($me.wk_used // 0) >= 95)) as $me_done
+  | ($accts | sort_by(.wk_days)
+     | reduce .[] as $a ({cum: 0, need: 0};
+         .cum += (100 - $a.wk_used)
+         | .need = ([.need, .cum / $a.wk_days] | max))) as $runway
+  | [ ($accts | length),
+      ($me.lbl // ""),
+      ($others | map("\(.lbl) " + (if .fh_reset <= $now then "free" else "\(.fh_used)%" end))
+       | join(" ")),
+      $runway.cum,
+      $runway.need,
+      ($others
+       | map((if .fh_reset <= $now then 0 else .fh_used end) as $fh
+             | select($fh < 95)
+             | ((100 - .wk_used) / .wk_days) as $decay
+             | select($me_done or ($decay > $me_decay))
+             | {lbl, decay: $decay})
+       | sort_by(-.decay) | first | .lbl // ""),
+      ($accts | map("\(.lbl) \(.wk_used)% (\((.wk_days * 10 | round) / 10)d)") | join(" ")),
+      (if $me.uuid then ($me.wk_used | round) else "" end),
+      (if $me.uuid then $me.wk_reset else "" end)
+    ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
+acct_n="${acct_n:-0}"
+
+# Liest t, u und r der letzten Historienzeile ohne eigenen Prozess. Die Zeilen schreibt
+# dieses Skript selbst mit printf, ihr Format ist fest; Zeilen aelterer Versionen haben
+# kein r. Setzt last_t, last_u und last_r.
+read_last_history_point() {
+  local last_line="" line key pattern
+  if [ -f "$1" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do last_line=$line; done < "$1"
+  fi
+  last_t=0 last_u=-1 last_r=0
+  for key in t u r; do
+    pattern="\"$key\":([0-9]+)"
+    [[ $last_line =~ $pattern ]] && printf -v "last_$key" '%s' "${BASH_REMATCH[1]}"
+  done
+}
 
 # --- Verbrauchs-Historie je Account ---
 # Nur bei geaendertem Wert und hoechstens alle fuenf Minuten anhaengen, sonst waechst die
 # Datei mit jedem Turn. Alles aelter als 48 Stunden faellt beim Schreiben raus.
-# Der Wert kommt aus dem Snapshot, nicht aus dem Payload: dort ist ein veralteter Stand
-# schon aussortiert. Der Reset r kennzeichnet das Fenster, zu dem der Wert gehoert.
+# Der Reset r kennzeichnet das Fenster, zu dem der Wert gehoert.
 if [ -n "$acct_owner" ] && [ -n "$weekly" ]; then
   hist_file="$acct_dir/${acct_uuid}.history"
-  read -r hist_u hist_r <<< "$(echo "$accounts" | jq -r --arg u "$acct_uuid" '
-    .[] | select(.uuid == $u) | "\(.wk_used | round) \(.wk_reset)"')"
-  last_line=$(tail -1 "$hist_file" 2>/dev/null)
-  last_t=$(echo "$last_line" | jq -r '.t // 0' 2>/dev/null || echo 0)
-  last_ur=$(echo "$last_line" | jq -r '"\(.u // -1) \(.r // 0)"' 2>/dev/null || echo "-1 0")
-  if [ -n "$hist_u" ] && [ "$hist_u $hist_r" != "$last_ur" ] && [ $((NOW - last_t)) -ge 300 ]; then
+  read_last_history_point "$hist_file"
+  if [ -n "$hist_u" ] && [ "$hist_u $hist_r" != "$last_u $last_r" ] && [ $((NOW - last_t)) -ge 300 ]; then
     printf '{"t":%d,"u":%d,"r":%d}\n' "$NOW" "$hist_u" "$hist_r" >> "$hist_file"
     tmp_hist="${hist_file}.tmp.$$"
     if jq -c --argjson cut "$((NOW - 172800))" 'select(.t >= $cut)' "$hist_file" > "$tmp_hist" 2>/dev/null; then
@@ -185,7 +268,7 @@ if [ -n "$acct_owner" ] && [ -n "$weekly" ]; then
   fi
 fi
 
-# --- Verbrauchstempo der letzten 24 Stunden ueber alle Accounts ---
+# --- Verbrauchstempo der letzten 24 Stunden ueber alle Accounts, und die Runway ---
 # Je Account getrennt rechnen und erst dann summieren. Zusammengeworfen wuerden die
 # Zeitreihen zweier Accounts ineinandersortiert, und jeder Wechsel erschiene als
 # gewaltiger Sprung. Wechselt der Reset r, hat ein neues Fenster begonnen: dann zaehlt
@@ -194,34 +277,96 @@ fi
 # im Fenster hinausgeht. Punkte ohne r stammen aus aelteren
 # Versionen, die genau das nicht unterscheiden konnten, und bleiben aussen vor. Unter
 # zwei Messpunkten bleibt das Tempo unbekannt statt null, sonst behauptete eine frische
-# Installation, es werde nichts verbraucht.
+# Installation, es werde nichts verbraucht. Eine abgerissene Zeile, etwa von einem
+# abgebrochenen Lauf, faellt einzeln raus, statt die ganze Datei unbrauchbar zu machen.
+#
+# Runway: Das Budget fuellt sich mit N mal 100 Punkten pro sieben Tage nach. Liegt das
+# Tempo darunter, laeuft nichts leer ("oo"). Darueber bleiben Rest / (Tempo -
+# Nachfuellrate) Tage. Die Rechnung glaettet die einzelnen Resets zu einem
+# gleichmaessigen Zufluss und liegt deshalb um Stunden daneben, wenn ein Reset
+# unmittelbar bevorsteht.
+# Dahinter steht die Luft "+N/d": so viele Punkte pro Tag mehr, bis bei jedem Reset
+# nichts mehr uebrig ist. Das Soll-Tempo need ist die strengste Frist: nach Reset
+# sortiert muss bis zu jedem Reset der Rest aller Fenster weg sein, die bis dahin enden.
+# Das setzt voraus, dass zuerst der Account mit dem naechsten Reset verbraucht wird,
+# also dem Wechselsignal gefolgt wird. runway_tier waehlt die Farbe: unter einem Tag
+# warn, unter drei mid.
 burn_24h=""
-burn_sum=0
-burn_known=0
-for hist_f in "$acct_dir"/*.history; do
-  [ -f "$hist_f" ] || continue
-  hist_d=$(jq -s -r --argjson from "$((NOW - 86400))" '
-    map(select(.t >= $from and .r)) | sort_by(.t)
-    | if length < 2 then "?"
-      else reduce .[1:][] as $p ({r: .[0].r, top: .[0].u, sum: 0};
-          if $p.r == .r then .sum += ([$p.u - .top, 0] | max) | .top = ([.top, $p.u] | max)
-          else .sum += $p.u | .r = $p.r | .top = $p.u end)
-        | .sum | tostring
-      end' "$hist_f" 2>/dev/null) || hist_d="?"
-  [ "$hist_d" = "?" ] && continue
-  burn_sum=$(awk -v a="$burn_sum" -v b="$hist_d" 'BEGIN{printf "%.2f", a + b}')
-  burn_known=1
-done
-[ "$burn_known" = 1 ] && burn_24h="$burn_sum"
-
-# Fallback: falls current_usage leer, aus Prozent + Gesamtgröße berechnen
-if [ -z "$used_tok" ] && [ -n "$used_pct" ] && [ -n "$total_tok" ]; then
-  used_tok=$(awk -v p="$used_pct" -v t="$total_tok" 'BEGIN{printf "%d", p/100*t}')
+history_files=("$acct_dir"/*.history)
+if [ "${#history_files[@]}" -gt 0 ]; then
+  IFS="$FIELD_SEP" read -r burn_24h runway_days runway_tier runway_spare \
+    <<< "$(jq -n -R -r --argjson from "$((NOW - 86400))" --argjson rest "${rest:-0}" \
+    --argjson need "${need:-0}" --argjson accounts "$acct_n" '
+    [inputs | (try fromjson catch null) as $point | select($point | type == "object")
+     | $point + {file: input_filename}]
+    | map(select(.t >= $from and .r))
+    | group_by(.file)
+    | map(sort_by(.t)
+        | select(length >= 2)
+        | reduce .[1:][] as $p ({r: .[0].r, top: .[0].u, sum: 0};
+            if $p.r == .r then .sum += ([$p.u - .top, 0] | max) | .top = ([.top, $p.u] | max)
+            else .sum += $p.u | .r = $p.r | .top = $p.u end)
+        | .sum)
+    | if length == 0 then ["", "", "", 0]
+      else add as $rate
+        | ($accounts * 100 / 7) as $refill
+        | [$rate]
+          + (if $rate <= $refill then ["oo", "ok"]
+             else ($rest / ($rate - $refill)) as $days
+               | [$days,
+                  (if $days < 1 then "warn" elif $days < 3 then "mid" else "ok" end)]
+             end)
+          + [($need - $rate + 0.5 | floor)]
+      end
+    | map(tostring) | join("\u001f")' "${history_files[@]}" < /dev/null 2>/dev/null)"
 fi
 
-# --- git-Branch (ohne optionale Locks) ---
-branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null \
-         || git -C "$cwd" --no-optional-locks rev-parse --short HEAD 2>/dev/null)
+# --- git-Branch ---
+# Aus HEAD gelesen, statt git zu starten: das kostete jede Sekunde einen Prozess je
+# Session. Ein Worktree oder Submodul hat statt des Ordners .git eine Datei mit
+# "gitdir: <pfad>". Ein losgeloester HEAD zeigt die ersten sieben Zeichen des Commits;
+# git selbst nimmt in grossen Repos mehr, damit die Kurzform eindeutig bleibt.
+# Ein relativer Pfad wird erst absolut: ohne Schraegstrich kaeme die Suche nie oben an.
+# Ein Repo im Reftable-Format fuehrt in HEAD nur einen Platzhalter, dort fragt es git.
+# Nicht erkannt werden ein nacktes Repo als Arbeitsverzeichnis und ein Symlink, dessen
+# Ziel in einem Repo liegt.
+read_git_branch() {
+  local dir=$1 git_dir="" head_line
+  branch=""
+  case "$dir" in
+    /*) ;;
+    *)  dir="$PWD/$dir" ;;
+  esac
+  # Wie git -C: ein Ordner, den es nicht gibt, hat keinen Branch.
+  [ -d "$dir" ] || return 0
+  while :; do
+    if [ -d "$dir/.git" ]; then
+      git_dir="$dir/.git"
+      break
+    fi
+    if [ -f "$dir/.git" ]; then
+      read -r head_line < "$dir/.git"
+      head_line=${head_line%$'\r'}
+      git_dir=${head_line#gitdir: }
+      [ "${git_dir#/}" = "$git_dir" ] && git_dir="$dir/$git_dir"
+      break
+    fi
+    [ -z "$dir" ] && return 0
+    dir=${dir%/*}
+  done
+  [ -f "$git_dir/HEAD" ] || return 0
+  read -r head_line < "$git_dir/HEAD"
+  head_line=${head_line%$'\r'}
+  case "$head_line" in
+    "ref: "*) branch=${head_line#ref: } branch=${branch#refs/heads/} ;;
+    *)        branch=${head_line:0:7} ;;
+  esac
+  if [ "$branch" = ".invalid" ]; then
+    branch=$(git -C "$dir" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null \
+             || git -C "$dir" --no-optional-locks rev-parse --short HEAD 2>/dev/null)
+  fi
+}
+read_git_branch "${cwd:-$PWD}"
 
 # --- ANSI-Farben ---
 RESET='\033[0m'
@@ -246,18 +391,32 @@ if [ -n "${NO_COLOR:-}" ]; then
   SEP=" | "
 fi
 
+# Die Hilfsfunktionen schreiben ihr Ergebnis in die Variable, deren Namen sie als erstes
+# Argument bekommen. Ein "wert=$(funktion)" startete fuer jeden Aufruf eine Subshell.
+# Gerechnet wird in ganzen Zahlen, das kann bash selbst, ohne awk. Die Zielvariablen
+# sind hier vorab leer angelegt: shellcheck erkennt eine Zuweisung per printf -v nicht,
+# und keine Funktion darf eine lokale Variable gleichen Namens haben, sonst landet das
+# Ergebnis dort.
+col="" bar="" used_fmt="" total_fmt="" line1="" line2="" line3="" line4=""
+
 # --- Hilfsfunktion: Tokens hübsch formatieren (z.B. 48400 -> 48.4k, 1000000 -> 1M) ---
-fmt_tok() {
-  local n=$1
-  if [ -z "$n" ] || [ "$n" = "null" ]; then
-    echo ""
+format_tokens() {
+  local target=$1 tokens=$2 divisor unit scaled
+  if [ -z "$tokens" ]; then
+    printf -v "$target" '%s' ""
     return
   fi
-  awk -v n="$n" 'BEGIN{
-    if (n >= 1000000)      printf "%.1fM", n/1000000
-    else if (n >= 1000)    printf "%.1fk", n/1000
-    else                   printf "%d", n
-  }' | sed 's/\.0\([kM]\)/\1/'
+  if   [ "$tokens" -ge 1000000 ]; then divisor=1000000 unit=M
+  elif [ "$tokens" -ge 1000 ];    then divisor=1000    unit=k
+  else
+    printf -v "$target" '%d' "$tokens"
+    return
+  fi
+  # %.1f auf den exakten Dezimalwert, damit Gleichstaende wie 1250 -> 1.2k so runden wie
+  # bisher. Das printf ist eingebaut, es kostet keinen Prozess.
+  printf -v scaled '%d.%0*d' $((tokens / divisor)) $((${#divisor} - 1)) $((tokens % divisor))
+  printf -v scaled '%.1f' "$scaled"
+  printf -v "$target" '%s%s' "${scaled%.0}" "$unit"
 }
 
 # --- Segment 1: Verzeichnis (Home als ~) ---
@@ -290,61 +449,40 @@ if [ -n "$effort" ]; then
 fi
 
 # --- Hilfsfunktion: Progressbar (10 Segmente) ---
-# Args: percent (0-100)  -> "█████░░░░░"
+# Args: Zielvariable, percent (0-100)  -> "█████░░░░░"
 make_bar() {
-  local p=$1
-  local width=10
-  local filled
-  filled=$(awk -v p="$p" -v w="$width" 'BEGIN{
-    f = int(p/100*w + 0.5)
-    if (f < 0) f = 0
-    if (f > w) f = w
-    printf "%d", f
-  }')
-  local empty=$((width - filled))
-  local bar=""
-  local i
-  for ((i=0; i<filled; i++)); do bar="${bar}█"; done
-  for ((i=0; i<empty;  i++)); do bar="${bar}░"; done
-  printf "%s" "$bar"
-}
-
-# --- Label eines Accounts (A, B, C ...) aus der Sortierung nach erstem Auftreten ---
-# Bei nur einem bekannten Account bleibt das Label leer, dann sieht die Zeile aus wie
-# vor dem Umbau.
-acct_label() {
-  local uuid=$1
-  [ "$acct_n" -ge 2 ] || return 0
-  echo "$accounts" | jq -r --arg u "$uuid" '
-    (map(.uuid) | index($u)) as $i
-    | if $i == null then "" else (("ABCDEFGH" | split(""))[$i]) end'
+  local target=$1 filled=$(( ($2 + 5) / 10 )) cells="" i
+  [ "$filled" -lt 0 ] && filled=0
+  [ "$filled" -gt 10 ] && filled=10
+  for ((i = 0; i < 10; i++)); do
+    if [ "$i" -lt "$filled" ]; then cells="${cells}█"; else cells="${cells}░"; fi
+  done
+  printf -v "$target" '%s' "$cells"
 }
 
 # --- Farbauswahl nach Prozent ---
-# Args: percent [warn_at] [caution_at] -- Schwellen überschreibbar, weil nicht jedes
-# Budget gleich frueh alarmiert: beim Wochenlimit ist 80% noch normaler Verbrauch.
+# Args: Zielvariable percent [warn_at] [caution_at] -- Schwellen überschreibbar, weil
+# nicht jedes Budget gleich frueh alarmiert: beim Wochenlimit ist 80% noch normaler
+# Verbrauch.
 pct_color() {
-  local p=$1
-  local warn_at=${2:-80}
-  local caution_at=${3:-50}
-  if [ "$p" -ge "$warn_at" ]; then
-    printf "%b" "$C_WARN"
-  elif [ "$p" -ge "$caution_at" ]; then
-    printf "%b" "$C_CTX"
+  local target=$1 percent=$2 warn_at=${3:-80} caution_at=${4:-50}
+  if [ "$percent" -ge "$warn_at" ]; then
+    printf -v "$target" '%s' "$C_WARN"
+  elif [ "$percent" -ge "$caution_at" ]; then
+    printf -v "$target" '%s' "$C_CTX"
   else
-    printf "%b" "$C_CTX_OK"
+    printf -v "$target" '%s' "$C_CTX_OK"
   fi
 }
 
 # --- Segment 4: Kontext (Progressbar + Tokens + Prozent) ---
 seg_ctx=""
 if [ -n "$used_tok" ]; then
-  used_fmt=$(fmt_tok "$used_tok")
-  total_fmt=$(fmt_tok "$total_tok")
-  pct="${used_pct:-0}"
-  pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo 0)
-  col=$(pct_color "$pct_int")
-  bar=$(make_bar "$pct_int")
+  format_tokens used_fmt "$used_tok"
+  format_tokens total_fmt "$total_tok"
+  pct_int="${used_pct:-0}"
+  pct_color col "$pct_int"
+  make_bar bar "$pct_int"
   if [ -n "$total_fmt" ]; then
     seg_ctx="${col}ctx ${bar} ${pct_int}% (${used_fmt}/${total_fmt})${RESET}"
   else
@@ -355,32 +493,23 @@ fi
 # --- Segment 5: 5h-Rate-Limit (immer wenn vorhanden) ---
 seg_rate=""
 if [ -n "$five_h" ]; then
-  rate_val=$(printf '%.0f' "$five_h")
-  col=$(pct_color "$rate_val")
+  pct_color col "$five_h"
   # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
   cd=""
   if [ -n "$five_h_reset" ]; then
-    cd=$(awk -v reset="$five_h_reset" -v now="$NOW" 'BEGIN{
-      s = reset - now
-      if (s < 0) s = 0
-      h = int(s / 3600)
-      m = int((s % 3600) / 60)
-      if (h > 0) printf " (%dh%02dm)", h, m
-      else       printf " (%dm)", m
-    }')
+    reset_left=$(( ${five_h_reset%%.*} - NOW ))
+    [ "$reset_left" -lt 0 ] && reset_left=0
+    if [ "$reset_left" -ge 3600 ]; then
+      printf -v cd ' (%dh%02dm)' $((reset_left / 3600)) $((reset_left % 3600 / 60))
+    else
+      printf -v cd ' (%dm)' $((reset_left / 60))
+    fi
   fi
-  seg_rate="${col}5h ${rate_val}%${cd}${RESET}"
+  seg_rate="${col}5h ${five_h}%${cd}${RESET}"
   # Ab zwei Accounts bekommt der aktive seinen Buchstaben, die uebrigen haengen dahinter:
   # "frei", wenn ihr 5h-Fenster durch ist, sonst ihr letzter bekannter Stand.
   if [ "$acct_n" -ge 2 ]; then
-    lbl=$(acct_label "$acct_uuid")
-    seg_rate="${col}5h ${lbl} ${rate_val}%${cd}${RESET}"
-    others=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
-      to_entries[] | select(.value.uuid != $u)
-      | (("ABCDEFGH" | split(""))[.key]) as $lbl
-      | if .value.fh_reset <= $now then "\($lbl) free" else "\($lbl) \(.value.fh_used)%" end' \
-      | tr '\n' ' ')
-    others="${others% }"
+    seg_rate="${col}5h ${acct_lbl} ${five_h}%${cd}${RESET}"
     [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
   fi
 fi
@@ -390,19 +519,21 @@ fi
 # verstrichenem Tag 1/7 (~14,29%) ausgeben. delta = Soll(Zeit) - Ist(wk):
 #   delta > 0  -> unter Budget, "im Plus"  (grün)
 #   delta < 0  -> über Budget, zu schnell verbrannt, "im Minus" (gelb/rot)
+# In Sekunden gerechnet: 604800 sind sieben Tage, 6048 Sekunden ein Prozent davon.
 seg_daily=""
 if [ -n "$weekly" ] && [ -n "$weekly_reset" ]; then
-  daily_calc=$(awk -v reset="$weekly_reset" -v used="$weekly" -v now="$NOW" 'BEGIN{
-    days_left = (reset - now) / 86400
-    if (days_left < 0) days_left = 0
-    if (days_left > 7) days_left = 7
-    days_elapsed = 7 - days_left
-    expected = days_elapsed / 7 * 100          # Soll-Verbrauch nach verstrichener Zeit
-    delta = expected - used                    # >0 = Plus (unter Budget)
-    delta = (delta < 0) ? -int(-delta + 0.5) : int(delta + 0.5)  # runden, kein "-0"
-    printf "%d %.1f", delta, days_left
-  }')
-  read -r d_val d_days_left <<< "$daily_calc"
+  week_left=$(( ${weekly_reset%%.*} - NOW ))
+  [ "$week_left" -lt 0 ] && week_left=0
+  [ "$week_left" -gt 604800 ] && week_left=604800
+  # Soll minus Ist in 6048steln Prozent, kaufmaennisch gerundet, kein "-0"
+  delta_parts=$(( 604800 - week_left - weekly * 6048 ))
+  if [ "$delta_parts" -ge 0 ]; then
+    d_val=$(( (delta_parts + 3024) / 6048 ))
+  else
+    d_val=$(( -((3024 - delta_parts) / 6048) ))
+  fi
+  days_left_tenths=$(( (week_left * 10 + 43200) / 86400 ))
+  d_days_left="$((days_left_tenths / 10)).$((days_left_tenths % 10))"
   # Farbe nach Pacing: Plus grün, Minus < 1 Tag gelb, Minus >= 1 Tag (14%) rot
   if   [ "$d_val" -ge 0 ];   then dcol="$C_CTX_OK"
   elif [ "$d_val" -gt -14 ]; then dcol="$C_CTX"
@@ -413,35 +544,21 @@ if [ -n "$weekly" ] && [ -n "$weekly_reset" ]; then
 fi
 
 # --- Segment 5a2: Runway ueber das Gesamtbudget (ersetzt das Delta ab zwei Accounts) ---
-# Das Budget fuellt sich mit N mal 100 Punkten pro sieben Tage nach. Liegt das Tempo
-# darunter, laeuft nichts leer. Darueber bleiben Rest / (Tempo - Nachfuellrate) Tage. Die
-# Rechnung glaettet die einzelnen Resets zu einem gleichmaessigen Zufluss und liegt
-# deshalb um Stunden daneben, wenn ein Reset unmittelbar bevorsteht.
-# Dahinter steht die Luft "+N/d": so viele Punkte pro Tag mehr, bis bei jedem Reset
-# nichts mehr uebrig ist. Das Soll-Tempo ist die strengste Frist: nach Reset sortiert
-# muss bis zu jedem Reset der Rest aller Fenster weg sein, die bis dahin enden. Das
-# setzt voraus, dass zuerst der Account mit dem naechsten Reset verbraucht wird, also
-# dem Wechselsignal gefolgt wird.
+# Die Rechnung steht beim Verbrauchstempo, hier wird nur formatiert.
 if [ "$acct_n" -ge 2 ]; then
   if [ -z "$burn_24h" ]; then
     seg_daily="${C_SEP}rw ?${RESET}"
   else
-    read -r rest need <<< "$(echo "$accounts" | jq -r '
-      sort_by(.wk_days)
-      | reduce .[] as $a ({cum: 0, need: 0};
-          .cum += (100 - $a.wk_used)
-          | .need = ([.need, .cum / $a.wk_days] | max))
-      | "\(.cum) \(.need)"')"
-    seg_daily=$(awk -v rest="$rest" -v need="$need" -v rate="$burn_24h" -v n="$acct_n" \
-      -v ok="$C_CTX_OK" -v mid="$C_CTX" -v warn="$C_WARN" -v rst="$RESET" 'BEGIN{
-      refill = n * 100 / 7
-      spare = int(need - rate + 0.5)
-      extra = (spare > 0) ? sprintf(" +%d/d", spare) : ""
-      if (rate <= refill) { printf "%srw oo%s%s", ok, extra, rst; exit }
-      days = rest / (rate - refill)
-      col = (days < 1) ? warn : ((days < 3) ? mid : ok)
-      printf "%srw %.1fd%s%s", col, days, extra, rst
-    }')
+    case "$runway_tier" in
+      warn) rcol="$C_WARN" ;;
+      mid)  rcol="$C_CTX" ;;
+      *)    rcol="$C_CTX_OK" ;;
+    esac
+    extra=""
+    [ "$runway_spare" -gt 0 ] && extra=" +${runway_spare}/d"
+    runway_label="$runway_days"
+    [ "$runway_days" = oo ] || printf -v runway_label '%.1fd' "$runway_days"
+    seg_daily="${rcol}rw ${runway_label}${extra}${RESET}"
   fi
 fi
 
@@ -455,20 +572,6 @@ fi
 # niedrigere Verfallsrate, obwohl genau dorthin zu wechseln waere.
 seg_switch=""
 if [ "$acct_n" -ge 2 ] && [ -n "$acct_uuid" ]; then
-  switch_to=$(echo "$accounts" | jq -r --arg u "$acct_uuid" --argjson now "$NOW" '
-    ((map(select(.uuid == $u)) | first) // {}) as $me
-    | ((100 - ($me.wk_used // 0)) / ($me.wk_days // 7)) as $me_decay
-    | ((($me.fh_used // 0) >= 95) or (($me.wk_used // 0) >= 95)) as $me_done
-    | [ to_entries[]
-        | select(.value.uuid != $u)
-        | (("ABCDEFGH" | split(""))[.key]) as $lbl
-        | (if .value.fh_reset <= $now then 0 else .value.fh_used end) as $fh
-        | select($fh < 95)
-        | ((100 - .value.wk_used) / .value.wk_days) as $decay
-        | select($me_done or ($decay > $me_decay))
-        | {lbl: $lbl, decay: $decay}
-      ]
-    | sort_by(-.decay) | first | .lbl // empty')
   if [ -n "$switch_to" ]; then
     seg_switch="${C_WARN}-> ${switch_to}${RESET}"
   fi
@@ -477,26 +580,20 @@ fi
 # --- Segment 5b: Weekly-Rate-Limit (immer wenn vorhanden) ---
 seg_weekly=""
 if [ -n "$weekly" ]; then
-  w_val=$(printf '%.0f' "$weekly")
-  col=$(pct_color "$w_val" 90)
-  seg_weekly="${col}wk ${w_val}%${RESET}"
+  pct_color col "$weekly" 90
+  seg_weekly="${col}wk ${weekly}%${RESET}"
   # Ab zwei Accounts steht hinter jedem Wert die Restlaufzeit seines Fensters. Damit
   # laesst sich das Wechselsignal nachrechnen, statt ihm glauben zu muessen.
   if [ "$acct_n" -ge 2 ]; then
-    wk_all=$(echo "$accounts" | jq -r '
-      to_entries[]
-      | (("ABCDEFGH" | split(""))[.key]) as $lbl
-      | "\($lbl) \(.value.wk_used)% (\((.value.wk_days * 10 | round) / 10)d)"' | tr '\n' ' ')
-    seg_weekly="${col}wk ${wk_all% }${RESET}"
+    seg_weekly="${col}wk ${wk_all}${RESET}"
   fi
 fi
 
 # --- Segment 5c: Weekly-Opus-Rate-Limit (falls vorhanden) ---
 seg_weekly_opus=""
 if [ -n "$weekly_opus" ]; then
-  wo_val=$(printf '%.0f' "$weekly_opus")
-  col=$(pct_color "$wo_val")
-  seg_weekly_opus="${col}wk-opus ${wo_val}%${RESET}"
+  pct_color col "$weekly_opus"
+  seg_weekly_opus="${col}wk-opus ${weekly_opus}%${RESET}"
 fi
 
 # --- Segment ContextQ (token-optimizer Quality-Score, pro Session) ---
@@ -510,7 +607,8 @@ fi
 seg_ctxq=""
 if [ -n "$transcript" ]; then
   seg_ctxq="${C_SEP}ctxQ …${RESET}"
-  sid=$(basename "$transcript" .jsonl)
+  sid=${transcript##*/}
+  sid=${sid%.jsonl}
   qfile="$HOME/.claude/token-optimizer/quality-cache-${sid}.json"
   [ -f "$qfile" ] || qfile="$HOME/.claude/token-optimizer/quality-cache.json"
   if [ -f "$qfile" ]; then
@@ -550,18 +648,9 @@ case "$cache_ttl_lbl" in
   5m) cache_ttl=300;  cache_label="5m" ;;
 esac
 seg_cache="${C_CACHE}cache ${cache_label}${RESET}"
-cache_calc=""
+cache_left=""
 if [ -n "$cache_expires" ]; then
-  cache_calc=$(awk -v expires="$cache_expires" -v now="$NOW" 'BEGIN{
-    s = expires - now
-    if (s < 0) s = 0
-    h = int(s/3600); m = int((s%3600)/60); sec = int(s%60)
-    if      (s <= 0) lbl = "cold"
-    else if (h > 0)  lbl = sprintf("%dh%02dm", h, m)
-    else if (m > 0)  lbl = sprintf("%dm%02ds", m, sec)
-    else             lbl = sprintf("%ds", sec)
-    printf "%d|%s", s, lbl
-  }')
+  cache_left=$(( ${cache_expires%%.*} - NOW ))
 elif [ -n "$transcript" ] && [ -f "$transcript" ]; then
   # Epoch des letzten Cache-Touch = spaetester Timestamp aus assistant-Message (jeder
   # API-Call schreibt Cache) und echter User-Eingabe (type=user, kein isMeta, content
@@ -570,30 +659,26 @@ elif [ -n "$transcript" ] && [ -f "$transcript" ]; then
   t_mtime=$(jq -r 'select((.type=="assistant") or (.type=="user" and (.isMeta|not) and ((.message.content|type=="string") or ((.message.content|type=="array") and (any(.message.content[]; .type=="tool_result")|not))))) | (.timestamp | sub("\\.[0-9]+";"") | fromdateiso8601)' "$transcript" 2>/dev/null | tail -1)
   # Fallback auf File-mtime, falls das Transcript (noch) keine parsebare Turn-Zeile hat.
   [ -n "$t_mtime" ] || t_mtime=$(stat -f %m "$transcript" 2>/dev/null || stat -c %Y "$transcript" 2>/dev/null || echo 0)
-  cache_calc=$(awk -v ttl="$cache_ttl" -v mt="$t_mtime" -v now="$NOW" 'BEGIN{
-    if (mt <= 0) { print "-1|"; exit }
-    s = ttl - (now - mt)
-    if (s < 0) s = 0
-    h = int(s/3600); m = int((s%3600)/60); sec = int(s%60)
-    if      (s <= 0) lbl = "cold"
-    else if (h > 0)  lbl = sprintf("%dh%02dm", h, m)
-    else if (m > 0)  lbl = sprintf("%dm%02ds", m, sec)
-    else             lbl = sprintf("%ds", sec)
-    printf "%d|%s", s, lbl
-  }')
+  t_mtime=${t_mtime%%.*}
+  [ "${t_mtime:-0}" -gt 0 ] && cache_left=$(( cache_ttl - (NOW - t_mtime) ))
 fi
 
 # Farbe: viel Zeit Cyan, letztes Fuenftel Gelb, abgelaufen Rot. Gilt fuer beide Wege.
-if [ -n "$cache_calc" ]; then
-  c_secs="${cache_calc%%|*}"; c_lbl="${cache_calc##*|}"
-  if [ "$c_secs" != "-1" ]; then
-    thresh=$(awk -v t="$cache_ttl" 'BEGIN{printf "%d", t*0.2}')
-    if   [ "$c_secs" -le 0 ];         then ccol="$C_WARN"
-    elif [ "$c_secs" -lt "$thresh" ]; then ccol="$C_CTX"
-    else                                   ccol="$C_CACHE"
-    fi
-    seg_cache="${ccol}cache ${c_lbl}/${cache_label}${RESET}"
+if [ -n "$cache_left" ]; then
+  [ "$cache_left" -lt 0 ] && cache_left=0
+  if   [ "$cache_left" -le 0 ];    then c_lbl="cold"
+  elif [ "$cache_left" -ge 3600 ]; then
+    printf -v c_lbl '%dh%02dm' $((cache_left / 3600)) $((cache_left % 3600 / 60))
+  elif [ "$cache_left" -ge 60 ];   then
+    printf -v c_lbl '%dm%02ds' $((cache_left / 60)) $((cache_left % 60))
+  else
+    c_lbl="${cache_left}s"
   fi
+  if   [ "$cache_left" -le 0 ];                  then ccol="$C_WARN"
+  elif [ "$cache_left" -lt $((cache_ttl / 5)) ]; then ccol="$C_CTX"
+  else                                               ccol="$C_CACHE"
+  fi
+  seg_cache="${ccol}cache ${c_lbl}/${cache_label}${RESET}"
 fi
 
 # --- Segment 6: Vim-Mode ---
@@ -603,13 +688,15 @@ if [ -n "$vim_mode" ]; then
 fi
 
 # --- Segmente zu einer Zeile fügen (leere überspringen, kein führender Trenner) ---
+# Args: Zielvariable, Segmente
 join_segs() {
-  local out="" seg
+  local target=$1 joined="" seg
+  shift
   for seg in "$@"; do
     [ -n "$seg" ] || continue
-    [ -z "$out" ] && out="$seg" || out="${out}${SEP}${seg}"
+    [ -z "$joined" ] && joined="$seg" || joined="${joined}${SEP}${seg}"
   done
-  printf '%s' "$out"
+  printf -v "$target" '%s' "$joined"
 }
 
 # --- Statusline zusammensetzen (4-zeilig) ---
@@ -619,10 +706,10 @@ join_segs() {
 # Zeile 4 (Limits):   5h, wk, (wk-opus), d bzw. Runway, (Wechselsignal)
 # Eine leere Zeile entfaellt ganz, statt als Leerzeile zu erscheinen: eine Sitzung ohne
 # Rate-Limits hat damit drei Zeilen statt einer Luecke.
-line1=$(join_segs "$seg_dir" "$seg_git" "$seg_worktree")
-line2=$(join_segs "$seg_model" "$seg_effort" "$seg_vim")
-line3=$(join_segs "$seg_ctxq" "$seg_ctx" "$seg_cache")
-line4=$(join_segs "$seg_rate" "$seg_weekly" "$seg_weekly_opus" "$seg_daily" "$seg_switch")
+join_segs line1 "$seg_dir" "$seg_git" "$seg_worktree"
+join_segs line2 "$seg_model" "$seg_effort" "$seg_vim"
+join_segs line3 "$seg_ctxq" "$seg_ctx" "$seg_cache"
+join_segs line4 "$seg_rate" "$seg_weekly" "$seg_weekly_opus" "$seg_daily" "$seg_switch"
 
 out="$line1"
 for line in "$line2" "$line3" "$line4"; do
