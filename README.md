@@ -55,7 +55,7 @@ The split is the point. The first two lines barely change within a session, the 
 | Weekly | `wk 18%` | when present |
 | Weekly Opus | `wk-opus 7%` | when present |
 | Daily pacing | `d +6% (3.2d)` | with one known account |
-| Runway | `rw 2.4d` | with two or more known accounts |
+| Runway | `rw 2.4d`, `rw oo +8/d` | with two or more known accounts |
 | Account switch | `-> B` | when another account is the better place to work |
 | Context window | `ctx ███░░░░░░░ 28% (280k/1M)` | progress bar, green → yellow → red as it fills |
 
@@ -137,7 +137,7 @@ The next Claude Code session picks it up. That's the whole install.
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.1.1
+ver=v1.3.1
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
