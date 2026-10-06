@@ -5,17 +5,21 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=tests/fixture-env.sh
+. "$root/tests/fixture-env.sh"
 test_now=1788870000
 
 for fixture in "$root"/tests/fixtures/*.json; do
   name=$(basename "$fixture" .json)
+  load_fixture_env "$name"
   sandbox=$(mktemp -d)
   setup="$root/tests/setup/$name.sh"
   if [ -f "$setup" ]; then
     HOME="$sandbox" STATUSLINE_NOW="$test_now" bash "$setup" "$sandbox" >/dev/null
   fi
   HOME="$sandbox" NO_COLOR=1 STATUSLINE_NOW="$test_now" \
-    env -u ENABLE_PROMPT_CACHING_1H bash "$root/statusline.sh" < "$fixture" \
+    env -u ENABLE_PROMPT_CACHING_1H -u CLAUDE_STATUSLINE_SWITCH_URL \
+    ${extra_env[@]+"${extra_env[@]}"} bash "$root/statusline.sh" < "$fixture" \
     > "$root/tests/expected/$name.txt"
   rm -rf "$sandbox"
   printf '=== %s ===\n' "$name"

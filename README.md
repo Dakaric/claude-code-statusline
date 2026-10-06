@@ -107,6 +107,14 @@ Accounts are labelled `A`, `B`, `C` in the order they were first seen. The UUID 
 
 The numbers behind the hint are on the line, so you can check it rather than trust it. To forget an account you logged into by accident, delete its `.json` and `.history` from `~/.claude/statusline-accounts/`.
 
+#### Click-through link to switch accounts
+
+Set `CLAUDE_STATUSLINE_SWITCH_URL` and the limits line ends in a link: the switch hint `-> B` when the status line recommends a switch, otherwise a `⇄`. Open it with Cmd+click in a terminal that supports OSC 8 hyperlinks. Set the variable in `~/.claude/settings.json`:
+
+    "env": { "CLAUDE_STATUSLINE_SWITCH_URL": "http://localhost:7373/sphere?swap=1" }
+
+The URL needs a scheme and must not contain whitespace or backslashes, otherwise it is ignored.
+
 ### `ctxQ A(92)` — context quality
 
 If you run a token-optimizer plugin that scores context health, its `UserPromptSubmit` hook writes a grade to `~/.claude/token-optimizer/quality-cache-<session>.json` every couple of minutes. The segment surfaces that grade and score (`A(92)`), coloured green/yellow/orange/red by band. No file, no segment — it stays out of the way.

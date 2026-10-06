@@ -5,6 +5,8 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=tests/fixture-env.sh
+. "$root/tests/fixture-env.sh"
 script="$root/statusline.sh"
 test_now=1788870000
 pass=0
@@ -12,6 +14,7 @@ fail=0
 
 for fixture in "$root"/tests/fixtures/*.json; do
   name=$(basename "$fixture" .json)
+  load_fixture_env "$name"
   expected="$root/tests/expected/$name.txt"
   sandbox=$(mktemp -d)
   setup="$root/tests/setup/$name.sh"
@@ -20,8 +23,12 @@ for fixture in "$root"/tests/fixtures/*.json; do
   fi
   # ENABLE_PROMPT_CACHING_1H aus der Umgebung wuerde das Cache-Segment veraendern und
   # das Ergebnis von der Shell des Ausfuehrenden abhaengig machen.
+  # CLAUDE_STATUSLINE_SWITCH_URL aus der Shell des Ausfuehrenden darf die
+  # Erwartungen nicht veraendern, nur eine Env-Datei setzt sie. Die +-Expansion
+  # haelt bash 3.2 bei leerem Array und set -u still.
   actual=$(HOME="$sandbox" NO_COLOR=1 STATUSLINE_NOW="$test_now" \
-    env -u ENABLE_PROMPT_CACHING_1H bash "$script" < "$fixture")
+    env -u ENABLE_PROMPT_CACHING_1H -u CLAUDE_STATUSLINE_SWITCH_URL \
+    ${extra_env[@]+"${extra_env[@]}"} bash "$script" < "$fixture")
   rm -rf "$sandbox"
 
   if [ ! -f "$expected" ]; then
