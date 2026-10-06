@@ -2,6 +2,16 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.5.0 - 2026-10-06
+
+### Added
+
+- **A click-through link to switch accounts.** Set `CLAUDE_STATUSLINE_SWITCH_URL` and the limits line ends in a link to that URL (OSC 8, Cmd+click): the switch hint `-> B` when it is shown, otherwise a `⇄`. Without the variable the output is unchanged.
+
+### Fixed
+
+- **No more stray `*.tmp.<pid>` files.** When Claude Code ended the status line between writing and renaming its account snapshot, the temporary file stayed behind in `~/.claude/statusline-accounts/`.
+
 ## 1.4.0 — 2026-09-24
 
 ### Added

@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -146,6 +146,19 @@ IFS="$FIELD_SEP" read -r login_read login_uuid acct_owner acct_replace first_see
 acct_uuid="${acct_owner:-$login_uuid}"
 acct_file="$acct_dir/${acct_uuid}.json"
 
+# Ein Abbruch zwischen Schreiben und Umbenennen (Claude Code beendet eine
+# ueberholte Statusline) liess bisher *.tmp.PID-Dateien liegen. Der EXIT-Trap
+# raeumt die eigene Temp-Datei weg, TERM/INT/HUP fuehren ueber exit dorthin.
+acct_tmp=""
+tmp_hist=""
+cleanup_tmp() {
+  [ -n "$acct_tmp" ] && rm -f "$acct_tmp"
+  [ -n "$tmp_hist" ] && rm -f "$tmp_hist"
+  return 0
+}
+trap cleanup_tmp EXIT
+trap 'exit 143' TERM INT HUP
+
 # Geschrieben wird nur, wenn die Snapshots von Besitzer und Login gelesen wurden, soweit
 # es sie gibt. Fehlt der des Logins, stimmt die Zuordnung ueber den Reset nicht mehr.
 # Fehlt der des Besitzers, wuerde sein first_seen zu "jetzt": first_seen bestimmt die
@@ -177,8 +190,10 @@ if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ] \
          ({}; .[$k] = later($old[$k]; $new[$k])))}' \
     > "$acct_tmp" 2>/dev/null; then
     mv -f "$acct_tmp" "$acct_file"
+    acct_tmp=""
   else
     rm -f "$acct_tmp"
+    acct_tmp=""
   fi
 fi
 
@@ -282,8 +297,10 @@ if [ -n "$acct_owner" ] && [ -n "$weekly" ]; then
     tmp_hist="${hist_file}.tmp.$$"
     if jq -c --argjson cut "$((NOW - 172800))" 'select(.t >= $cut)' "$hist_file" > "$tmp_hist" 2>/dev/null; then
       mv "$tmp_hist" "$hist_file"
+      tmp_hist=""
     else
       rm -f "$tmp_hist"
+      tmp_hist=""
     fi
   fi
 fi
@@ -411,6 +428,29 @@ if [ -n "${NO_COLOR:-}" ]; then
     C_WARN='' C_SEP='' C_CACHE='' C_ORANGE=''
   SEP=" | "
 fi
+
+# --- Optionaler Klick-Link (OSC 8) ---
+# Mit CLAUDE_STATUSLINE_SWITCH_URL bekommt die Limit-Zeile einen Cmd+Klick-Link,
+# etwa auf eine Seite zum Kontowechsel. Ohne Variable bleibt die Ausgabe
+# unveraendert. Erlaubt sind nur URLs mit Schema und ohne Leerraum,
+# Steuerzeichen und Backslash: die Zeile geht durch printf %b, ein Backslash in
+# der URL wuerde dort zur Steuersequenz. NO_COLOR laesst den Link stehen, er ist
+# keine Farbe.
+switch_url=""
+url_re='^[A-Za-z][A-Za-z0-9+.-]*://[^[:space:][:cntrl:]\]+$'
+if [[ "${CLAUDE_STATUSLINE_SWITCH_URL:-}" =~ $url_re ]]; then
+  switch_url="$CLAUDE_STATUSLINE_SWITCH_URL"
+fi
+
+# link_wrap VAR TEXT: VAR wird TEXT, bei gesetzter switch_url als OSC-8-Link.
+# printf -v statt nameref, damit bash 3.2 (macOS) mitlaeuft.
+link_wrap() {
+  if [ -n "$switch_url" ]; then
+    printf -v "$1" '%s' "\033]8;;${switch_url}\033\\\\${2}\033]8;;\033\\\\"
+  else
+    printf -v "$1" '%s' "$2"
+  fi
+}
 
 # Die Hilfsfunktionen schreiben ihr Ergebnis in die Variable, deren Namen sie als erstes
 # Argument bekommen. Ein "wert=$(funktion)" startete fuer jeden Aufruf eine Subshell.
@@ -725,6 +765,21 @@ join_segs() {
   done
   printf -v "$target" '%s' "$joined"
 }
+
+# --- Segment 5a4: Klick-Link zum Kontowechsel (ergaenzt seg_switch aus 5a3) ---
+# Zeigt die Zeile das Wechselsignal, ist es selbst der Link. Sonst steht am Ende
+# ein eigenes Zeichen, aber nur in einer Zeile, die ohnehin Limits zeigt: allein
+# wuerde es eine Zeile nur fuer sich aufmachen.
+switch_link=""
+if [ -n "$switch_url" ]; then
+  if [ -n "$seg_switch" ]; then
+    link_wrap switch_link "-> ${switch_to}"
+    seg_switch="${C_WARN}${switch_link}${RESET}"
+  elif [ -n "${seg_rate}${seg_weekly}${seg_weekly_opus}${seg_daily}" ]; then
+    link_wrap switch_link "⇄"
+    seg_switch="${C_SEP}${switch_link}${RESET}"
+  fi
+fi
 
 # --- Statusline zusammensetzen (4-zeilig) ---
 # Zeile 1 (Ort):      Pfad, branch, worktree
