@@ -1037,5 +1037,16 @@ check_guard_symlinked_app
 check_guard_symlinked_applications_dir
 check_guard_direct
 check_guard_bad_home_uninstall
+check_tool_error_appears() {
+  new_sandbox
+  unmanaged_status
+  if ! FAKE_UNAME=Darwin FAKE_FAIL=codesign run_installer --swap; then fail "gescheiterte Signatur bricht den Installer ab"
+  elif ! grep -q 'code signing failed' "$sb/out"; then fail "Werkzeug-Fehler wird nicht ausgegeben"
+  else ok "Werkzeug-Ausgabe nur bei Fehler zeigen (codesign)"
+  fi
+  drop_sandbox
+}
+
 check_single_recursive_delete
+check_tool_error_appears
 exit "$failed"

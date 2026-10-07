@@ -565,17 +565,18 @@ find_cswap() {
 }
 
 install_cswap() {
+  local out
   if command -v uv >/dev/null 2>&1; then
     if uv tool list 2>/dev/null | grep -q '^claude-swap '; then
-      uv tool upgrade claude-swap || warn "could not update cswap, keeping the installed version"
+      out=$(uv tool upgrade claude-swap 2>&1) || { printf '%s\n' "$out" >&2; warn "could not update cswap, keeping the installed version"; }
     elif ! find_cswap; then
-      uv tool install claude-swap || return 1
+      out=$(uv tool install claude-swap 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
     fi
   elif command -v pipx >/dev/null 2>&1; then
     if pipx list --short 2>/dev/null | grep -q '^claude-swap '; then
-      pipx upgrade claude-swap || warn "could not update cswap, keeping the installed version"
+      out=$(pipx upgrade claude-swap 2>&1) || { printf '%s\n' "$out" >&2; warn "could not update cswap, keeping the installed version"; }
     elif ! find_cswap; then
-      pipx install claude-swap || return 1
+      out=$(pipx install claude-swap 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
     fi
   elif ! find_cswap; then
     info "cswap is installed with uv or pipx, and neither was found."
@@ -583,7 +584,7 @@ install_cswap() {
     curl -LsSf https://astral.sh/uv/install.sh | sh || return 1
     # Der Installer von astral.sh legt uv nach UV_INSTALL_DIR, sonst XDG_BIN_HOME, sonst ~/.local/bin.
     UV_BIN="${UV_INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}/uv"
-    "$UV_BIN" tool install claude-swap || return 1
+    out=$("$UV_BIN" tool install claude-swap 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   fi
   find_cswap
 }
@@ -606,7 +607,8 @@ adopt_current_account() {
     return 0
   fi
   [ "$managed" = true ] && return 0
-  "$CSWAP_BIN" add < /dev/null || warn "cswap add failed. Add the account yourself with: cswap add"
+  local out
+  out=$("$CSWAP_BIN" add < /dev/null 2>&1) || { printf '%s\n' "$out" >&2; warn "cswap add failed. Add the account yourself with: cswap add"; }
 }
 
 # --- Registrierung des Handlers ---
@@ -626,8 +628,9 @@ APPLESCRIPT
 
 # plist_put PLIST SCHLÜSSEL TYP WERT: setzt einen Schlüssel neu, egal ob er schon da war.
 plist_put() {
+  local out
   PlistBuddy -c "Delete :$2" "$1" >/dev/null 2>&1
-  PlistBuddy -c "Add :$2 $3 $4" "$1"
+  out=$(PlistBuddy -c "Add :$2 $3 $4" "$1" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
 }
 
 # Die App entsteht nur dort, wo der Installer sie auch wieder löschen darf: ~/Applications
@@ -651,20 +654,25 @@ register_macos_app() {
     return 1
   fi
   safe_remove_tree "$APP_PATH"
-  osacompile -o "$APP_PATH" "$script" || return 1
+  local out
+  out=$(osacompile -o "$APP_PATH" "$script" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   plist_put "$plist" CFBundleIdentifier string "$BUNDLE_ID" || return 1
   plist_put "$plist" LSUIElement bool true || return 1
   PlistBuddy -c "Delete :CFBundleURLTypes" "$plist" >/dev/null 2>&1
-  PlistBuddy -c "Add :CFBundleURLTypes array" "$plist" \
-    && PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$plist" \
-    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string $BUNDLE_ID" "$plist" \
-    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$plist" \
-    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $URL_SCHEME" "$plist" \
-    || return 1
+  if ! out=$(
+    PlistBuddy -c "Add :CFBundleURLTypes array" "$plist" \
+      && PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$plist" \
+      && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string $BUNDLE_ID" "$plist" \
+      && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$plist" \
+      && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $URL_SCHEME" "$plist" 2>&1
+  ); then
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
   # Die geänderte Info.plist bricht die Signatur von osacompile. Neu ad hoc signieren,
   # sonst startet macOS die App auf Apple Silicon nicht.
-  codesign --force --sign - "$APP_PATH" || return 1
-  lsregister -f "$APP_PATH"
+  out=$(codesign --force --sign - "$APP_PATH" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  out=$(lsregister -f "$APP_PATH" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
 }
 
 # Desktop-Einträge zitieren Exec nach eigenen Regeln. Ein Pfad mit Zeichen, die dort
@@ -684,7 +692,8 @@ register_linux_desktop() {
     rm -f "$tmp"
     return 1
   fi
-  xdg-mime default "$DESKTOP_NAME" "x-scheme-handler/$URL_SCHEME" || return 1
+  local out
+  out=$(xdg-mime default "$DESKTOP_NAME" "x-scheme-handler/$URL_SCHEME" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$dir" >/dev/null 2>&1
   fi

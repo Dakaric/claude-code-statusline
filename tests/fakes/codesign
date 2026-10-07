@@ -2,5 +2,10 @@
 # Fake für codesign: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
 set -u
 printf 'codesign %s\n' "$*" >> "$FAKE_LOG"
-case " ${FAKE_FAIL:-} " in *" codesign "*) exit 1 ;; esac
+case " ${FAKE_FAIL:-} " in
+  *" codesign "*)
+    printf 'code signing failed: Invalid argument\n' >&2
+    exit 1
+    ;;
+esac
 exit 0
