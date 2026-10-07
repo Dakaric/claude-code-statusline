@@ -316,6 +316,154 @@ check_home_guard() {
   drop_sandbox
 }
 
+check_uninstall_removes_only_own_paths() {
+  local os
+  for os in Darwin Linux; do
+    new_sandbox
+    unmanaged_status
+    mkdir -p "$home/.claude/statusline-accounts" "$home/Applications/Other.app"
+    printf 'keep\n' > "$home/.claude/other.txt"
+    printf '{}\n' > "$home/.claude/statusline-accounts/x.json"
+    printf 'keep\n' > "$home/Applications/Other.app/keep"
+    FAKE_UNAME=$os run_installer --swap
+    jq '. + {theme: "dark"}' "$home/.claude/settings.json" > "$sb/s.json" && mv "$sb/s.json" "$home/.claude/settings.json"
+    if ! FAKE_UNAME=$os run_installer --uninstall; then fail "$os: --uninstall endet mit Fehler"
+    elif [ -e "$home/.claude/statusline.sh" ]; then fail "$os: statusline.sh bleibt"
+    elif [ -e "$home/.claude/statusline" ]; then fail "$os: Zustandsordner bleibt"
+    elif [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "$os: App bleibt"
+    elif [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "$os: Desktop-Datei bleibt"
+    elif jq -e 'has("statusLine")' "$home/.claude/settings.json" >/dev/null; then fail "$os: statusLine bleibt"
+    elif ! jq -e '.theme == "dark"' "$home/.claude/settings.json" >/dev/null; then fail "$os: fremder Schlüssel verloren"
+    elif [ ! -f "$home/.claude/other.txt" ] || [ ! -f "$home/.claude/statusline-accounts/x.json" ] \
+      || [ ! -f "$home/Applications/Other.app/keep" ]; then fail "$os: fremde Dateien gelöscht"
+    elif ! grep -q 'cswap purge' "$sb/out"; then fail "$os: kein Hinweis auf cswap"
+    else ok "$os: --uninstall entfernt nur die eigenen Pfade"
+    fi
+    drop_sandbox
+  done
+}
+
+# --uninstall entfernt statusLine nur, wenn es auf die verwaltete Kopie zeigt. Eine
+# fremde Statusline und eine andere Kopie dieser Statusline bleiben eingehängt.
+check_uninstall_keeps_foreign_statusline() {
+  local command
+  for command in \~/other.sh \~/old/statusline.sh; do
+    new_sandbox
+    mkdir -p "$home/.claude" "$home/old"
+    printf '#!/bin/sh\n' > "$home/other.sh"
+    cp "$root/statusline.sh" "$home/old/statusline.sh"
+    jq -n --arg c "$command" '{statusLine: {type: "command", command: $c}}' > "$home/.claude/settings.json"
+    cp "$home/.claude/settings.json" "$sb/original.json"
+    run_installer --uninstall
+    if has_log 'curl '; then fail "--uninstall lädt herunter"
+    elif ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "--uninstall verändert statusLine auf $command"
+    elif ! cmp -s "$home/old/statusline.sh" "$root/statusline.sh"; then fail "--uninstall fasst die andere Kopie an"
+    else ok "--uninstall lässt $command stehen"
+    fi
+    drop_sandbox
+  done
+}
+
+# Die verwaltete Kopie mit absolutem Pfad gilt als eigene: statusLine wird entfernt.
+# Fiele die Prüfung erst nach dem Löschen von statusline.sh, bliebe der Eintrag stehen.
+check_uninstall_absolute_command() {
+  new_sandbox
+  run_installer
+  jq --arg c "$home/.claude/statusline.sh" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+  mv "$sb/s.json" "$home/.claude/settings.json"
+  run_installer --uninstall
+  if jq -e 'has("statusLine")' "$home/.claude/settings.json" >/dev/null; then fail "--uninstall lässt absoluten statusLine-Pfad stehen"
+  else ok "--uninstall erkennt die verwaltete Kopie auch absolut"
+  fi
+  drop_sandbox
+}
+
+# Der App-Pfad ist ein Symlink nach außen: nichts außerhalb darf verschwinden.
+check_guard_symlinked_app() {
+  new_sandbox
+  mkdir -p "$sb/outside" "$home/Applications"
+  printf 'keep\n' > "$sb/outside/sentinel"
+  ln -s "$sb/outside" "$home/Applications/Claude Statusline Switch.app"
+  if FAKE_UNAME=Darwin run_installer --uninstall; then fail "Symlink als App-Pfad wird nicht abgewiesen"
+  elif has_log 'curl '; then fail "--uninstall lädt herunter"
+  elif [ ! -f "$sb/outside/sentinel" ]; then fail "Ziel des Symlinks wurde gelöscht"
+  elif has_log 'lsregister -u'; then fail "fremde App bei LaunchServices abgemeldet"
+  elif ! grep -q 'refusing to delete' "$sb/out"; then fail "keine Begründung für die Weigerung"
+  else ok "Löschwächter: App-Pfad als Symlink"
+  fi
+  drop_sandbox
+}
+
+# ~/Applications selbst zeigt nach außen: der aufgelöste Pfad liegt dann nicht unter HOME.
+check_guard_symlinked_applications_dir() {
+  new_sandbox
+  mkdir -p "$sb/outside/Claude Statusline Switch.app"
+  printf 'keep\n' > "$sb/outside/Claude Statusline Switch.app/sentinel"
+  ln -s "$sb/outside" "$home/Applications"
+  if FAKE_UNAME=Darwin run_installer --uninstall; then fail "umgelenktes ~/Applications wird nicht abgewiesen"
+  elif has_log 'curl '; then fail "--uninstall lädt herunter"
+  elif [ ! -f "$sb/outside/Claude Statusline Switch.app/sentinel" ]; then fail "App außerhalb von HOME gelöscht"
+  else ok "Löschwächter: ~/Applications als Symlink"
+  fi
+  drop_sandbox
+}
+
+# Der Wächter selbst, direkt aufgerufen: Pfade unter HOME, die nicht der App-Pfad sind,
+# werden abgewiesen; gelöscht wird nur der App-Pfad und das eigene Temp. Kein Ziel liegt
+# außerhalb der Sandbox, damit ein kaputter Wächter im Testlauf nichts Fremdes löscht.
+# install.sh endet mit main "$@"; ohne diese Zeile lässt es sich als Bibliothek laden.
+check_guard_direct() {
+  local target lib before=$failed
+  new_sandbox
+  lib="$sb/lib.sh"
+  sed '$d' "$root/install.sh" > "$lib"
+  mkdir -p "$home/Applications/Claude Statusline Switch.app" "$home/.claude" "$home/Documents" \
+    "$sb/tmp/own" "$sb/tmp/other"
+  printf 'keep\n' > "$home/Documents/sentinel"
+  printf 'keep\n' > "$sb/tmp/other/sentinel"
+  for target in "$home" "$home/" "$home/." "$home/Applications" "$home/.claude" "$home/Documents" \
+      "$home/Applications/Claude Statusline Switch.app/.." "$sb" "$sb/tmp/other"; do
+    # shellcheck source=install.sh
+    if ( HOME=$home; . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; safe_remove_tree "$target" ) >/dev/null 2>&1; then
+      fail "safe_remove_tree nimmt $target an"
+    fi
+  done
+  if [ ! -f "$home/Documents/sentinel" ] || [ ! -f "$sb/tmp/other/sentinel" ]; then
+    fail "safe_remove_tree hat außerhalb gelöscht"
+  fi
+  # shellcheck source=install.sh
+  if ! ( HOME=$home; . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; safe_remove_tree "$TMP_DIR" ) >/dev/null 2>&1 \
+      || [ -e "$sb/tmp/own" ]; then
+    fail "eigenes Temp nicht gelöscht"
+  fi
+  # HOME mit Symlink-Komponente: der App-Pfad muss trotzdem erkannt werden.
+  ln -s "$home" "$sb/homelink"
+  # shellcheck source=install.sh
+  if ! ( HOME=$sb/homelink; . "$lib"; init_paths; TMP_DIR=""; safe_remove_tree "$APP_PATH" ) >/dev/null 2>&1 \
+      || [ -e "$home/Applications/Claude Statusline Switch.app" ]; then
+    fail "App-Pfad unter HOME-Symlink nicht gelöscht"
+  fi
+  [ "$failed" = "$before" ] && ok "Löschwächter: nur App-Pfad und eigenes Temp"
+  drop_sandbox
+}
+
+# Leeres HOME und Pfade, die aufgelöst / ergeben, brechen auch --uninstall vor allem ab.
+check_guard_bad_home_uninstall() {
+  local bad before=$failed
+  new_sandbox
+  for bad in "" "//" "/.."; do
+    if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_UNAME=Darwin \
+        "$BASH" "$root/install.sh" --yes --uninstall < /dev/null > "$sb/out" 2>&1; then
+      fail "--uninstall mit HOME='$bad' wird angenommen"
+    elif ! grep -q 'HOME must' "$sb/out"; then
+      fail "--uninstall mit HOME='$bad': Abbruch nicht durch den HOME-Wächter"
+    fi
+  done
+  [ -s "$sb/log" ] && fail "--uninstall mit unbrauchbarem HOME ruft trotzdem Werkzeuge"
+  [ "$failed" = "$before" ] && ok "Löschwächter: unbrauchbares HOME bei --uninstall"
+  drop_sandbox
+}
+
 # Statischer Wächter: rekursives Löschen gibt es nur an einer Stelle, in safe_remove_tree.
 check_single_recursive_delete() {
   local count others
@@ -609,5 +757,12 @@ check_switch_url_note
 check_swap_off_macos_touches_nothing
 check_no_swap_macos_removes_app
 check_partial_registration_cleaned_up
+check_uninstall_removes_only_own_paths
+check_uninstall_keeps_foreign_statusline
+check_uninstall_absolute_command
+check_guard_symlinked_app
+check_guard_symlinked_applications_dir
+check_guard_direct
+check_guard_bad_home_uninstall
 check_single_recursive_delete
 exit "$failed"

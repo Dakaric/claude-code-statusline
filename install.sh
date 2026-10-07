@@ -678,6 +678,29 @@ setup_swap() {
   print_swap_guide
 }
 
+# --- Deinstallation ---
+# cswap und seine Konten bleiben: sie gehören einem eigenen Werkzeug, das auch ohne diese
+# Statusline nützt. Die Verbrauchshistorie in statusline-accounts bleibt ebenfalls.
+uninstall() {
+  local current
+  remove_switch_handler
+  rm -f "$CONFIG_PATH"
+  current=$(current_statusline_command)
+  # Nur die verwaltete Kopie hat der Installer eingehängt, also nimmt er nur sie heraus.
+  # is_managed_command braucht die Datei, deshalb steht das vor dem Löschen.
+  if is_managed_command "$current"; then
+    write_settings 'del(.statusLine)'
+    info "Removed statusLine from $SETTINGS_PATH."
+  elif [ -n "$current" ] && points_to_this_statusline "$current"; then
+    info "statusLine still points at your other copy ($current). It was left in place."
+  fi
+  rm -f "$STATUSLINE_PATH" "$STATUSLINE_PATH.bak"
+  rmdir "$STATE_DIR" 2>/dev/null
+  info "Removed claude-code-statusline."
+  info "cswap and its accounts were kept. To remove them: cswap purge, then uv tool uninstall claude-swap (or pipx uninstall claude-swap)"
+  info "Usage history stays in $CLAUDE_DIR/statusline-accounts. Delete that folder if you no longer need it."
+}
+
 main() {
   require_bash
   parse_args "$@"
@@ -685,6 +708,10 @@ main() {
   detect_os
   require_jq
   check_settings_readable
+  if [ "$UNINSTALL" = 1 ]; then
+    uninstall
+    return 0
+  fi
   init_prompt
   make_tmp_dir
   install_statusline
