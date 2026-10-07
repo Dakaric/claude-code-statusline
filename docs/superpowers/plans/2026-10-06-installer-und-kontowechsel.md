@@ -759,7 +759,9 @@ JSON
     fail "fremde Schlüssel oder statusLine-Felder verändert"
   elif [ "$backups" != 1 ]; then fail "erwartet genau eine Sicherung, gefunden $backups"
   elif ! cmp -s "$home/.claude/"settings.json.bak-* "$sb/original.json"; then fail "Sicherung ist nicht das Original"
-  else ok "fremde Schlüssel bleiben, alte Kopie wird umgehängt"
+  elif ! cmp -s "$home/old/statusline.sh" "$root/statusline.sh"; then fail "alte Kopie wurde angefasst"
+  elif ! grep -q 'Your previous copy at ~/old/statusline.sh was left in place' "$sb/out"; then fail "kein Hinweis auf die alte Kopie"
+  else ok "fremde Schlüssel bleiben, alte Kopie wird umgehängt und bleibt liegen"
   fi
   drop_sandbox
 }
@@ -1175,11 +1177,20 @@ write_settings() {
   fi
 }
 
+# Steht schon die verwaltete Kopie drin, bleibt alles still. Eine andere Kopie dieser
+# Statusline wird mit Vorgabe Ja umgehängt, ein fremdes Skript nur nach ausdrücklichem
+# Ja. Die bisherige Datei fasst der Installer in keinem Fall an.
 wire_settings() {
   local current
   current=$(current_statusline_command)
   [ "$current" = "$STATUSLINE_COMMAND" ] && return 0
-  if [ -n "$current" ] && ! points_to_this_statusline "$current"; then
+  if [ -n "$current" ] && points_to_this_statusline "$current"; then
+    if ! ask_yes_no "settings.json points at another copy of this status line ($current). Switch to the managed copy at $STATUSLINE_COMMAND?" y; then
+      info "Kept $current. The managed copy at $STATUSLINE_COMMAND is installed but not in use."
+      return 0
+    fi
+    info "Your previous copy at $current was left in place. Delete it if you no longer need it."
+  elif [ -n "$current" ]; then
     if ! ask_yes_no "settings.json uses another status line ($current). Replace it?" n; then
       info "Kept your status line. To use this one, set statusLine.command to $STATUSLINE_COMMAND in $SETTINGS_PATH."
       return 0
@@ -2363,9 +2374,15 @@ open 'claude-statusline://switch?to=fremd%40example.com'
 
 Erwartet: Mitteilung „fremd@example.com is not an account managed by cswap.", `cswap status` unverändert.
 
-- [ ] **Step 5: Echter Klick in der Statusline**
+- [ ] **Step 5: Link-Variable entfernen, echter Klick in der Statusline**
 
-Nur wenn Christian dafür `CLAUDE_STATUSLINE_SWITCH_URL` vorübergehend aus `settings.json` nimmt: neue Claude-Code-Session, Cmd+Klick auf `⇄`. Danach die Variable wieder eintragen oder bewusst draußen lassen (siehe offene Entscheidung unten).
+Entschieden: Der Statusline-Klick soll ohne Jarvis funktionieren. `CLAUDE_STATUSLINE_SWITCH_URL` dauerhaft aus `env` in `~/.claude/settings.json` nehmen (per `jq 'del(.env.CLAUDE_STATUSLINE_SWITCH_URL)'` über eine Temp-Datei, vorher Sicherung). Das Jarvis-Cockpit bleibt über den Konto-Chip in der Sphere erreichbar, nur der Statusline-Link zeigt nicht mehr dorthin.
+
+Dann eine neue Claude-Code-Session starten. Die Limit-Zeile muss jetzt `⇄` bzw. `-> X` als Link auf `claude-statusline://switch…` tragen (Prüfung mit `echo '<payload>' | ~/.claude/statusline.sh | cat -v` oder Hover im Terminal). Cmd+Klick: Mitteilung erscheint, `cswap status` zeigt das andere Konto.
+
+- [ ] **Step 5b: Jarvis-Doku nachziehen**
+
+In `/Users/chris/Sites/jarvis/CLAUDE.md` (Abschnitt „Konto-Swap") steht, die Statusline verlinke per `CLAUDE_STATUSLINE_SWITCH_URL` auf `/sphere?swap=1`. Den Satz ändern: Die Statusline wechselt seit 1.6.0 selbst über ihren Klick-Handler, `/sphere?swap=1` bleibt als Einstieg ins Konto-Overlay bestehen. Die Memory-Notiz `konto-swap-status.md` entsprechend anpassen. Eigener Commit im Jarvis-Repo.
 
 - [ ] **Step 6: Ergebnis festhalten**
 
@@ -2373,9 +2390,9 @@ Ergebnis in die Daily Note (Skill `daily-notes`). Bei Abweichungen: Fehler im Br
 
 ---
 
-## Offene Entscheidungen für den Grill
+## Entscheidungen aus dem Grill (2026-10-07)
 
-- **Christians eigener Link:** `CLAUDE_STATUSLINE_SWITCH_URL` zeigt auf das Jarvis-Cockpit und gewinnt gegen den Handler. Bleibt das so, oder übernimmt künftig der Handler und das Cockpit bleibt für den Überblick?
-- **Umhängen einer anderen Kopie:** Zeigt `statusLine` auf eine andere Kopie dieser Statusline (bei Christian `~/.claude/statusline-command.sh`), hängt der Installer ohne Rückfrage auf `~/.claude/statusline.sh` um. Die alte Kopie bleibt liegen. Gewollt?
-- **Sprache der Ausgaben:** Der Plan macht Installer und Handler englisch, die Spec formuliert die Frage auf Deutsch. Englisch passt zum öffentlichen Repo.
-- **Mehrdeutige Mail:** Hat jemand dieselbe Mail in zwei Organisationen, weist der Handler `-> B` ab. Reicht das, oder soll der Snapshot zusätzlich die `organizationUuid` tragen?
+- **Andere Kopie:** Zeigt `statusLine` auf eine andere Kopie dieser Statusline, fragt der Installer mit Vorgabe Ja, ob er auf die verwaltete Kopie umhängt. Die alte Datei bleibt unangetastet, die Ausgabe nennt ihren Pfad. Umgesetzt in `wire_settings` (Task 2), Begriffe in `CONTEXT.md`.
+- **Christians Link:** Der Statusline-Klick läuft künftig über den Handler, ohne Jarvis. `CLAUDE_STATUSLINE_SWITCH_URL` wird in Task 7 entfernt, die Jarvis-Doku nachgezogen.
+- **Sprache:** Alle Ausgaben englisch, keine Locale-Weiche. Steht in der Spec.
+- **Gleiche Mail in zwei Organisationen:** wird abgewiesen, Erweiterung über `&org=` steht unter „Nicht Teil davon" in der Spec.

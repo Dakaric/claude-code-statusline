@@ -36,6 +36,10 @@ ungeprüft.
   Marker-Datei (`stat`, kein zusätzlicher Prozess). Ein toter Link wird so nie angezeigt.
 - **`CLAUDE_STATUSLINE_SWITCH_URL` gewinnt weiterhin.** Wer ein eigenes Ziel hat (etwa ein
   Cockpit), behält es.
+- **Alles, was ein Nutzer liest, ist englisch**: Fragen und Hinweise des Installers,
+  Mitteilungen des Handlers, README, Release Notes. Das Repo ist öffentlich und englisch, die
+  Meldungen von cswap sind es ohnehin. Eine Sprachweiche nach Locale gibt es nicht. Die
+  deutschen Formulierungen in dieser Spec beschreiben den Inhalt, nicht den Wortlaut.
 - **Release bleibt schlank.** `install.sh` erzeugt Handler-Skript, App und Desktop-Datei
   selbst aus eingebetteten Vorlagen. Neu im Release ist nur `install.sh`.
 
@@ -163,3 +167,7 @@ App-Pfad, der per Symlink nach außen zeigt.
 - Windows (`install.ps1`, Registry-Handler): eigener Schritt.
 - Automatisches Wechseln (`cswap auto`).
 - Ein Self-Update aus der Statusline heraus.
+- Eindeutigkeit bei gleicher Mail in zwei Organisationen. Der Handler weist ein solches Ziel
+  mit Meldung ab, die Rotation per `⇄` funktioniert weiter. Erweiterbar ohne Bruch über einen
+  zusätzlichen Parameter `&org=<organizationUuid>`: `~/.claude.json` und `cswap list --json`
+  führen beide die Organisation.
