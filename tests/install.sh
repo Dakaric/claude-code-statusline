@@ -639,6 +639,10 @@ check_registration_failure_leaves_no_marker() {
   unmanaged_status
   if ! FAKE_UNAME=Darwin FAKE_FAIL=lsregister run_installer --swap; then fail "gescheiterte Registrierung bricht den Installer ab"
   elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheiterter Registrierung"
+  elif [ -e "$home/.claude/statusline/switch-handler.sh" ]; then fail "Handler trotz gescheiterter Registrierung"
+  elif [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "App trotz gescheiterter Registrierung"
+  elif ! has_log 'lsregister -f'; then fail "Registrierung nie versucht"
+  elif ! has_log 'lsregister -u'; then fail "halbfertige App nicht bei LaunchServices abgemeldet"
   elif ! grep -q 'Click-to-switch is not active' "$sb/out"; then fail "kein Hinweis auf die gescheiterte Registrierung"
   else ok "gescheiterte Registrierung schreibt keinen Marker"
   fi
@@ -709,18 +713,141 @@ check_no_swap_macos_removes_app() {
 check_partial_registration_cleaned_up() {
   new_sandbox
   unmanaged_status
-  FAKE_UNAME=Darwin FAKE_FAIL=codesign run_installer --swap
-  if [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "unsignierte App bleibt liegen"
+  if ! FAKE_UNAME=Darwin FAKE_FAIL=codesign run_installer --swap; then fail "gescheiterte Signatur bricht den Installer ab"
+  elif ! has_log 'codesign --force'; then fail "Signatur nie versucht"
+  elif ! grep -q 'Click-to-switch is not active' "$sb/out"; then fail "kein Hinweis auf die gescheiterte Signatur"
+  elif [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "unsignierte App bleibt liegen"
   elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheiterter Signatur"
   else ok "gescheiterte Signatur räumt die App weg"
   fi
   drop_sandbox
   new_sandbox
   unmanaged_status
-  FAKE_UNAME=Linux FAKE_FAIL=xdg-mime run_installer --swap
-  if [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "Desktop-Datei ohne Zuordnung bleibt liegen"
+  if ! FAKE_UNAME=Linux FAKE_FAIL=xdg-mime run_installer --swap; then fail "gescheitertes xdg-mime bricht den Installer ab"
+  elif ! has_log 'xdg-mime default'; then fail "xdg-mime nie versucht"
+  elif ! grep -q 'Click-to-switch is not active' "$sb/out"; then fail "kein Hinweis auf das gescheiterte xdg-mime"
+  elif [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "Desktop-Datei ohne Zuordnung bleibt liegen"
   elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheitertem xdg-mime"
   else ok "gescheitertes xdg-mime räumt die Desktop-Datei weg"
+  fi
+  drop_sandbox
+}
+
+# Ein App-Pfad, der ein Link auf eine fremde App ist: weder --swap noch --no-swap fassen
+# das Ziel an, und LaunchServices bekommt nichts abgemeldet.
+check_guard_app_link_swap_and_no_swap() {
+  local mode
+  for mode in --no-swap --swap; do
+    new_sandbox
+    unmanaged_status
+    mkdir -p "$sb/foreign/Other.app/Contents" "$home/Applications"
+    printf 'keep\n' > "$sb/foreign/Other.app/sentinel"
+    ln -s "$sb/foreign/Other.app" "$home/Applications/Claude Statusline Switch.app"
+    if FAKE_UNAME=Darwin run_installer "$mode"; then fail "App-Link wird bei $mode nicht abgewiesen"
+    elif has_log 'lsregister -u'; then fail "fremde App bei $mode abgemeldet"
+    elif has_log 'osacompile'; then fail "bei $mode wurde über den Link gebaut"
+    elif [ ! -f "$sb/foreign/Other.app/sentinel" ]; then fail "Ziel des Links bei $mode gelöscht"
+    elif [ ! -L "$home/Applications/Claude Statusline Switch.app" ]; then fail "Link bei $mode ersetzt"
+    else ok "App-Pfad als Link bei $mode"
+    fi
+    drop_sandbox
+  done
+}
+
+# ~/Applications zeigt nach außen: --swap baut dort nichts, --no-swap löscht dort nichts.
+check_guard_applications_link_swap_and_no_swap() {
+  new_sandbox
+  unmanaged_status
+  mkdir -p "$sb/outside"
+  ln -s "$sb/outside" "$home/Applications"
+  if ! FAKE_UNAME=Darwin run_installer --swap; then fail "--swap mit umgelenktem ~/Applications endet mit Fehler"
+  elif has_log 'osacompile'; then fail "App über den ~/Applications-Link gebaut"
+  elif [ -n "$(ls -A "$sb/outside")" ]; then fail "außerhalb von HOME wurde etwas angelegt"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker ohne App"
+  elif ! grep -q 'real folder' "$sb/out"; then fail "kein Hinweis auf ~/Applications"
+  elif ! grep -q 'Click-to-switch is not active' "$sb/out"; then fail "kein Hinweis, dass der Klick nicht aktiv ist"
+  fi
+  : > "$sb/log"
+  mkdir -p "$sb/outside/Claude Statusline Switch.app"
+  printf 'keep\n' > "$sb/outside/Claude Statusline Switch.app/sentinel"
+  if FAKE_UNAME=Darwin run_installer --no-swap; then fail "--no-swap mit umgelenktem ~/Applications wird nicht abgewiesen"
+  elif has_log 'lsregister -u'; then fail "App hinter dem ~/Applications-Link abgemeldet"
+  elif [ ! -f "$sb/outside/Claude Statusline Switch.app/sentinel" ]; then fail "App außerhalb von HOME gelöscht"
+  else ok "Applications-Ordner als Link bei --swap und --no-swap"
+  fi
+  drop_sandbox
+}
+
+# Eine Datei an der Stelle der App bleibt, wie sie ist.
+check_guard_app_path_is_file() {
+  local mode
+  for mode in --no-swap --swap; do
+    new_sandbox
+    unmanaged_status
+    mkdir -p "$home/Applications"
+    printf 'keep\n' > "$home/Applications/Claude Statusline Switch.app"
+    if FAKE_UNAME=Darwin run_installer "$mode"; then fail "Datei als App-Pfad wird bei $mode nicht abgewiesen"
+    elif has_log 'lsregister -u'; then fail "Datei bei $mode abgemeldet"
+    elif [ "$(cat "$home/Applications/Claude Statusline Switch.app")" != keep ]; then fail "Datei bei $mode verändert"
+    else ok "App-Pfad als Datei bei $mode"
+    fi
+    drop_sandbox
+  done
+}
+
+# Ließ sich cswap diesmal nicht beschaffen, bleibt keine frühere Einrichtung aktiv.
+check_cswap_gone_removes_handler() {
+  new_sandbox
+  unmanaged_status
+  if ! run_installer --swap || [ ! -e "$home/.claude/statusline/switch-handler" ]; then
+    fail "Vorbedingung: --swap legt den Marker nicht an"
+  else
+    rm -f "$sb/bin/uv" "$home/.local/bin/cswap"
+    if ! run_installer --swap; then fail "--swap ohne cswap endet mit Fehler"
+    elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker bleibt, obwohl cswap fehlt"
+    elif [ -e "$home/.claude/statusline/switch-handler.sh" ]; then fail "Handler bleibt, obwohl cswap fehlt"
+    elif [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "Registrierung bleibt, obwohl cswap fehlt"
+    elif ! grep -q 'not set up' "$sb/out"; then fail "kein Hinweis, dass der Klick nicht eingerichtet ist"
+    else ok "fehlendes cswap baut die frühere Einrichtung ab"
+    fi
+  fi
+  drop_sandbox
+}
+
+# Antwortet cswap status nicht mit JSON, ist das ein Lesefehler und kein fehlender Login.
+check_garbled_status_is_read_error() {
+  new_sandbox
+  printf 'garbage\n' > "$sb/cswap/status.json"
+  if ! run_installer --swap; then fail "unlesbarer Kontostand endet mit Fehler"
+  elif ! grep -q 'could not read the account status' "$sb/out"; then fail "kein Hinweis auf den Lesefehler"
+  elif grep -q 'not logged in' "$sb/out"; then fail "Lesefehler als fehlender Login gemeldet"
+  elif has_log 'cswap add'; then fail "bei unlesbarem Kontostand cswap add aufgerufen"
+  else ok "unlesbarer Kontostand gilt als Lesefehler"
+  fi
+  drop_sandbox
+}
+
+# Ein unbekannter Wert in der Konfiguration gilt nicht als Ja.
+check_unknown_swap_value_is_unset() {
+  new_sandbox
+  mkdir -p "$home/.claude/statusline"
+  printf 'swap=banana\n' > "$home/.claude/statusline/config"
+  if ! run_installer; then fail "Update mit unbekanntem swap-Wert endet mit Fehler"
+  elif has_log 'uv ' || has_log 'cswap '; then fail "unbekannter swap-Wert wird als Ja behandelt"
+  elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "unbekannter swap-Wert nicht durch die Vorgabe ersetzt"
+  else ok "unbekannter swap-Wert gilt als nicht gesetzt"
+  fi
+  drop_sandbox
+}
+
+# Ein hängender Link auf die Desktop-Datei wird entfernt, sein Ziel nicht angefasst.
+check_dangling_desktop_link_removed() {
+  new_sandbox
+  mkdir -p "$home/.local/share/applications"
+  ln -s "$sb/gone.desktop" "$home/.local/share/applications/claude-statusline-switch.desktop"
+  if ! FAKE_UNAME=Linux run_installer --no-swap; then fail "--no-swap mit hängendem Link endet mit Fehler"
+  elif [ -L "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "hängender Link bleibt liegen"
+  else ok "hängender Link auf die Desktop-Datei wird entfernt"
   fi
   drop_sandbox
 }
@@ -757,6 +884,13 @@ check_switch_url_note
 check_swap_off_macos_touches_nothing
 check_no_swap_macos_removes_app
 check_partial_registration_cleaned_up
+check_guard_app_link_swap_and_no_swap
+check_guard_applications_link_swap_and_no_swap
+check_guard_app_path_is_file
+check_cswap_gone_removes_handler
+check_garbled_status_is_read_error
+check_unknown_swap_value_is_unset
+check_dangling_desktop_link_removed
 check_uninstall_removes_only_own_paths
 check_uninstall_keeps_foreign_statusline
 check_uninstall_absolute_command

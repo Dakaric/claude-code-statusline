@@ -468,10 +468,20 @@ write_switch_handler() {
 # Bevorzugt uv, sonst pipx. Ein cswap, das auf anderem Weg kam, bleibt unangetastet.
 # Setzt CSWAP_BIN auf den absoluten Pfad oder endet mit 1.
 CSWAP_BIN=""
+# Nach der Installation über astral.sh der Pfad des frisch installierten uv. Leer heißt:
+# das uv aus dem PATH.
+UV_BIN=""
+
+# Wohin uv seine Werkzeuge legt. Leer, wenn es kein uv gibt.
+uv_tool_bin_dir() {
+  local uv=${UV_BIN:-uv}
+  command -v "$uv" >/dev/null 2>&1 || return 0
+  "$uv" tool dir --bin 2>/dev/null
+}
 
 find_cswap() {
-  local uv_bin=""
-  command -v uv >/dev/null 2>&1 && uv_bin=$(uv tool dir --bin 2>/dev/null)
+  local uv_bin
+  uv_bin=$(uv_tool_bin_dir)
   if command -v cswap >/dev/null 2>&1; then
     CSWAP_BIN=$(command -v cswap)
   elif [ -n "$uv_bin" ] && [ -x "$uv_bin/cswap" ]; then
@@ -501,7 +511,9 @@ install_cswap() {
     info "cswap is installed with uv or pipx, and neither was found."
     ask_yes_no "Install uv with the official installer from astral.sh?" n || return 1
     curl -LsSf https://astral.sh/uv/install.sh | sh || return 1
-    "$HOME/.local/bin/uv" tool install claude-swap || return 1
+    # Der Installer von astral.sh legt uv nach UV_INSTALL_DIR, sonst XDG_BIN_HOME, sonst ~/.local/bin.
+    UV_BIN="${UV_INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}/uv"
+    "$UV_BIN" tool install claude-swap || return 1
   fi
   find_cswap
 }
@@ -510,12 +522,15 @@ install_cswap() {
 adopt_current_account() {
   local status email managed
   status=$("$CSWAP_BIN" status --json 2>/dev/null) || status=""
+  if [ -n "$status" ]; then
+    email=$(printf '%s' "$status" | jq -r '.active.email // ""' 2>/dev/null) \
+      && managed=$(printf '%s' "$status" | jq -r '.active.managed // false' 2>/dev/null) \
+      || status=""
+  fi
   if [ -z "$status" ]; then
     warn "could not read the account status from cswap. Add the account yourself with: cswap add"
     return 0
   fi
-  email=$(printf '%s' "$status" | jq -r '.active.email // ""' 2>/dev/null)
-  managed=$(printf '%s' "$status" | jq -r '.active.managed // false' 2>/dev/null)
   if [ -z "$email" ]; then
     info "Claude Code is not logged in. Log in, then add the account with: cswap add"
     return 0
@@ -545,10 +560,26 @@ plist_put() {
   PlistBuddy -c "Add :$2 $3 $4" "$1"
 }
 
+# Die App entsteht nur dort, wo der Installer sie auch wieder löschen darf: ~/Applications
+# löst unter HOME auf, und der App-Pfad ist, falls vorhanden, ein echter Ordner. Sonst
+# bliebe sie nach --no-swap und --uninstall liegen. safe_remove_tree prüft für sich selbst.
+app_path_allowed() {
+  local applications_dir home_dir
+  applications_dir=$(resolve_dir "$HOME/Applications") || return 1
+  home_dir=$(resolve_dir "$HOME") || return 1
+  [ "$applications_dir" = "$home_dir/Applications" ] || return 1
+  [ -L "$APP_PATH" ] && return 1
+  [ ! -e "$APP_PATH" ] || [ -d "$APP_PATH" ]
+}
+
 register_macos_app() {
   local script="$TMP_DIR/switch.applescript" plist="$APP_PATH/Contents/Info.plist"
   applescript_source > "$script" || return 1
   mkdir -p "$HOME/Applications" || return 1
+  if ! app_path_allowed; then
+    warn "click-to-switch needs ~/Applications to be a real folder, and $APP_PATH to be a folder or missing, not a link or a file"
+    return 1
+  fi
   safe_remove_tree "$APP_PATH"
   osacompile -o "$APP_PATH" "$script" || return 1
   plist_put "$plist" CFBundleIdentifier string "$BUNDLE_ID" || return 1
@@ -616,15 +647,14 @@ remove_switch_handler() {
   case "$OS" in
     macos)
       if [ -e "$APP_PATH" ] || [ -L "$APP_PATH" ]; then
-        # Erst prüfen, dann abmelden: ein Symlink auf eine fremde App darf nicht bei
-        # LaunchServices abgemeldet werden, bevor der Löschwächter ihn abweist.
-        [ -L "$APP_PATH" ] && die "refusing to delete $APP_PATH: it is a symlink"
-        [ -d "$APP_PATH" ] || die "refusing to delete $APP_PATH: not a directory"
+        # Erst prüfen, dann abmelden: eine fremde App darf nicht bei LaunchServices
+        # abgemeldet werden, bevor der Löschwächter sie abweist.
+        app_path_allowed || die "refusing to delete $APP_PATH: it is a link or a file, or ~/Applications is not a plain folder under HOME"
         lsregister -u "$APP_PATH" >/dev/null 2>&1
         safe_remove_tree "$APP_PATH"
       fi ;;
     linux)
-      if [ -e "$DESKTOP_PATH" ]; then
+      if [ -e "$DESKTOP_PATH" ] || [ -L "$DESKTOP_PATH" ]; then
         rm -f "$DESKTOP_PATH"
         if command -v update-desktop-database >/dev/null 2>&1; then
           update-desktop-database "${DESKTOP_PATH%/*}" >/dev/null 2>&1
@@ -659,6 +689,7 @@ GUIDE
 setup_swap() {
   local swap=$SWAP_FLAG
   [ -n "$swap" ] || swap=$(config_get swap)
+  case "$swap" in on|off) ;; *) swap="" ;; esac
   if [ -z "$swap" ]; then
     if ask_yes_no "Do you use more than one Claude account?" n; then swap=on; else swap=off; fi
   fi
@@ -669,6 +700,7 @@ setup_swap() {
     return 0
   fi
   if ! install_cswap; then
+    remove_switch_handler
     warn "cswap could not be installed, so click-to-switch is not set up. Install uv or pipx and run the installer with --swap again."
     return 0
   fi
