@@ -29,7 +29,12 @@ jobs:
           fi
 
       - name: Lint with shellcheck
-        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/branch.sh tests/freeze.sh tests/fixture-env.sh tests/setup/*.sh
+        run: shellcheck -x statusline.sh install.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/branch.sh tests/freeze.sh tests/fixture-env.sh tests/install.sh tests/handler.sh tests/extract-handler.sh tests/setup/*.sh tests/fakes/*
+
+      - name: Lint the embedded click handler
+        run: |
+          bash tests/extract-handler.sh > "$RUNNER_TEMP/switch-handler.sh"
+          shellcheck "$RUNNER_TEMP/switch-handler.sh"
 
       - name: Run tests
         run: bash tests/run.sh
@@ -46,8 +51,14 @@ jobs:
       - name: Run branch test
         run: bash tests/branch.sh
 
+      - name: Run installer test
+        run: bash tests/install.sh
+
+      - name: Run click handler test
+        run: bash tests/handler.sh
+
       - name: Generate checksums
-        run: sha256sum statusline.sh > SHA256SUMS
+        run: sha256sum statusline.sh install.sh > SHA256SUMS
 
       - name: Take release notes from CHANGELOG.md
         run: |
@@ -61,6 +72,12 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $tag" >&2
             exit 1
           fi
+          heading=$(awk -v hdr="## $tag " 'index($0, hdr) == 1 { print; exit }' CHANGELOG.md)
+          case "$heading" in
+            *YYYY-MM-DD*)
+              echo "::error::CHANGELOG.md still has the placeholder date for $tag: $heading" >&2
+              exit 1 ;;
+          esac
           cat RELEASE_NOTES.md
 
       - name: Create GitHub Release
@@ -68,6 +85,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            statusline.sh SHA256SUMS \
+            statusline.sh install.sh SHA256SUMS \
             --title "$GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md

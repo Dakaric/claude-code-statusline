@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Fake für osacompile -o APP SKRIPT: legt das Gerüst einer App an und legt das
+# AppleScript daneben, damit der Test seinen Inhalt prüfen kann.
+set -u
+printf 'osacompile %s\n' "$*" >> "$FAKE_LOG"
+[ "$#" -eq 3 ] && [ "$1" = -o ] || exit 2
+mkdir -p "$2/Contents/MacOS"
+printf '<?xml version="1.0"?>\n<plist version="1.0"><dict/></plist>\n' > "$2/Contents/Info.plist"
+cp "$3" "$2/Contents/source.applescript"

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake für cswap. Antworten liegen als Dateien in FAKE_CSWAP_DIR, damit jeder Testfall
+# sie selbst bestimmt. Ohne Datei antwortet er wie ein cswap ohne Login und ohne Konten.
+set -u
+printf 'cswap %s\n' "$*" >> "$FAKE_LOG"
+state=${FAKE_CSWAP_DIR:?}
+case "${1:-}" in
+  status)
+    cat "$state/status.json" 2>/dev/null || printf '{"schemaVersion":1,"active":null}\n' ;;
+  list)
+    cat "$state/list.json" 2>/dev/null || printf '{"schemaVersion":1,"accounts":[]}\n'
+    exit "$(cat "$state/list.exit" 2>/dev/null || echo 0)" ;;
+  switch)
+    cat "$state/switch.json" 2>/dev/null
+    exit "$(cat "$state/switch.exit" 2>/dev/null || echo 0)" ;;
+  add)
+    exit 0 ;;
+  --version)
+    printf 'cswap 0.26.0\n' ;;
+  *)
+    exit 2 ;;
+esac

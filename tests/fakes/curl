@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Fake für curl im Installer-Test: liefert Dateien aus FAKE_RELEASE_DIR statt aus dem
+# Netz. Erlaubt ist nur die Form, die install.sh für Release-Dateien benutzt:
+# curl -fsSL -o ZIEL URL. Jede andere Form, etwa der uv-Installer von astral, scheitert,
+# damit sie im Test nicht unbemerkt durchläuft.
+set -u
+printf 'curl %s\n' "$*" >> "$FAKE_LOG"
+if [ "$#" -ne 4 ] || [ "$1" != -fsSL ] || [ "$2" != -o ]; then
+  exit 2
+fi
+source_file="$FAKE_RELEASE_DIR/${4##*/}"
+[ -f "$source_file" ] || exit 22
+cp "$source_file" "$3"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake für notify-send: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
+set -u
+printf 'notify-send %s\n' "$*" >> "$FAKE_LOG"
+case " ${FAKE_FAIL:-} " in *" notify-send "*) exit 1 ;; esac
+exit 0

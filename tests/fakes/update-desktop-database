@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake für update-desktop-database: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
+set -u
+printf 'update-desktop-database %s\n' "$*" >> "$FAKE_LOG"
+case " ${FAKE_FAIL:-} " in *" update-desktop-database "*) exit 1 ;; esac
+exit 0

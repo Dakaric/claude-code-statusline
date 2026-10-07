@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Fake für pipx, Gegenstück zum uv-Fake.
+set -u
+printf 'pipx %s\n' "$*" >> "$FAKE_LOG"
+case "$*" in
+  "list --short")
+    [ -x "$HOME/.local/bin/cswap" ] && printf 'claude-swap 0.26.0\n'
+    exit 0 ;;
+  "install claude-swap")
+    mkdir -p "$HOME/.local/bin" && cp "$FAKE_DIR/cswap" "$HOME/.local/bin/cswap" ;;
+  "upgrade claude-swap")
+    exit 0 ;;
+  *)
+    exit 2 ;;
+esac
