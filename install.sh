@@ -248,9 +248,11 @@ confirm_replacing_foreign_script() {
 # Jede Sicherung bekommt einen eigenen Namen mit Zeitstempel und überschreibt nie eine
 # frühere. Bei gleicher Sekunde hängt ein Zähler an.
 back_up_statusline() {
-  local backup="$STATUSLINE_PATH.bak-$(date +%Y%m%d-%H%M%S)" counter=1
+  local stamp backup counter=1
+  stamp=$(date +%Y%m%d-%H%M%S)
+  backup="$STATUSLINE_PATH.bak-$stamp"
   while [ -e "$backup" ] || [ -L "$backup" ]; do
-    backup="$STATUSLINE_PATH.bak-$(date +%Y%m%d-%H%M%S)-$counter"
+    backup="$STATUSLINE_PATH.bak-$stamp-$counter"
     counter=$((counter + 1))
   done
   cp -p "$STATUSLINE_PATH" "$backup" || die "cannot back up $STATUSLINE_PATH"
@@ -404,7 +406,7 @@ handler_body() {
 # cswap switch läuft ohne Timeout und wird nie abgebrochen: cswap rollt einen
 # abgebrochenen Tausch nicht zurück, ein halber Login wäre die Folge.
 set -u
-: "${CSWAP_BIN:?}" "${JQ_BIN:?}"
+: "${CSWAP_BIN:?}" "${JQ_BIN:?}" "${LOCK_DIR:?}"
 
 notify() {
   local title="Claude Statusline" body=$1
@@ -423,6 +425,29 @@ notify() {
 reject() {
   notify "$1"
   exit 2
+}
+
+release_lock() {
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+# Immer nur ein Wechsel zugleich: Jeder Klick startet einen eigenen Handler, ein Doppelklick
+# also zwei cswap switch. Wer die Sperre belegt findet und deren PID lebt, wird abgewiesen,
+# ohne zu warten. Eine Sperre mit toter oder fehlender PID ist verwaist und wird übernommen.
+acquire_lock() {
+  local owner=""
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    [ -f "$LOCK_DIR/pid" ] && owner=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+    case "$owner" in
+      ""|*[!0-9]*) ;;
+      *) kill -0 "$owner" 2>/dev/null && reject "A switch is already running." ;;
+    esac
+    release_lock
+    mkdir "$LOCK_DIR" 2>/dev/null || reject "A switch is already running."
+  fi
+  trap release_lock EXIT
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
 }
 
 # Gibt die Mail aus ?to= dekodiert aus. Kodiert erlaubt sind nur die Zeichen, die jq @uri
@@ -469,10 +494,12 @@ main() {
       ambiguous) reject "$mail matches more than one cswap account. Switch with cswap in a terminal." ;;
       ""|*[!0-9]*) reject "Could not read the accounts from cswap." ;;
     esac
-    trap '' HUP INT TERM
+  fi
+  acquire_lock
+  trap '' HUP INT TERM
+  if [ -n "$target" ]; then
     result=$("$CSWAP_BIN" switch "$number" --json 2>/dev/null)
   else
-    trap '' HUP INT TERM
     result=$("$CSWAP_BIN" switch --json 2>/dev/null)
   fi
   message=$(printf '%s' "$result" | "$JQ_BIN" -r '.message // .error.message // empty' 2>/dev/null)
@@ -489,7 +516,7 @@ write_switch_handler() {
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   if ! {
     printf '#!/usr/bin/env bash\n'
-    printf 'CSWAP_BIN=%q\nJQ_BIN=%q\n' "$cswap_bin" "$jq_bin"
+    printf 'CSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_DIR=%q\n' "$cswap_bin" "$jq_bin" "$STATE_DIR/switch.lock"
     handler_body
   } > "$tmp" || ! chmod 755 "$tmp" || ! mv -f "$tmp" "$HANDLER_PATH"; then
     rm -f "$tmp"

@@ -9,7 +9,7 @@ sb=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$sb"' EXIT
 
 mkdir -p "$sb/bin" "$sb/cswap" "$sb/with space"
-for tool in bash cat; do ln -s "$(command -v "$tool")" "$sb/bin/$tool"; done
+for tool in bash cat mkdir rm rmdir readlink dirname; do ln -s "$(command -v "$tool")" "$sb/bin/$tool"; done
 for tool in uname osascript notify-send; do ln -s "$root/tests/fakes/$tool" "$sb/bin/$tool"; done
 
 # Der Handler entsteht über write_switch_handler aus install.sh, nicht über einen
@@ -26,9 +26,10 @@ jq_path=$(command -v jq)
   write_switch_handler "$cswap_path" "$jq_path"
 ) || { printf 'FEHLER handler: write_switch_handler scheitert\n'; exit 1; }
 
-want_head=$(printf '#!/usr/bin/env bash\nCSWAP_BIN=%q\nJQ_BIN=%q' "$cswap_path" "$jq_path")
-if [ "$(sed -n '1,3p' "$sb/handler.sh")" = "$want_head" ]; then printf 'ok     handler (Kopf aus write_switch_handler)\n'
-else printf 'FEHLER handler: Kopf weicht ab\n'; sed -n '1,3p' "$sb/handler.sh"; failed=1; fi
+lock_dir="$sb/switch.lock"
+want_head=$(printf '#!/usr/bin/env bash\nCSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_DIR=%q' "$cswap_path" "$jq_path" "$lock_dir")
+if [ "$(sed -n '1,4p' "$sb/handler.sh")" = "$want_head" ]; then printf 'ok     handler (Kopf aus write_switch_handler)\n'
+else printf 'FEHLER handler: Kopf weicht ab\n'; sed -n '1,4p' "$sb/handler.sh"; failed=1; fi
 if [ -x "$sb/handler.sh" ]; then printf 'ok     handler (ausführbar)\n'
 else printf 'FEHLER handler: Datei nicht ausführbar\n'; failed=1; fi
 
@@ -130,11 +131,12 @@ if [ "$rc" = 2 ] && grep -q '^Claude Statusline: ' "$sb/out"; then printf 'ok   
 else printf 'FEHLER handler: Abweisung bei scheiternder Mitteilung, Exit %s\n' "$rc"; failed=1; fi
 
 # cswap rollt einen abgebrochenen Tausch nicht zurück: kein Timeout, kein kill, kein
-# Hintergrundlauf im Handler. Geprüft wird nur Code, nicht Kommentare; ohne Rumpf ist
+# Hintergrundlauf im Handler. kill -0 sendet kein Signal und prüft nur, ob die PID der
+# Sperre lebt; es ist erlaubt. Geprüft wird nur Code, nicht Kommentare; ohne Rumpf ist
 # das ein Fehler, kein stilles ok.
 if ! body=$(bash "$root/tests/extract-handler.sh"); then
   printf 'FEHLER handler: kein Rumpf zum Prüfen\n'; failed=1
-elif printf '%s\n' "$body" | grep -v '^[[:space:]]*#' \
+elif printf '%s\n' "$body" | grep -v '^[[:space:]]*#' | grep -v 'kill -0' \
     | grep -nE '\btimeout\b|\bkill\b|\bnohup\b|\bdisown\b|&[[:space:]]*($|;)'; then
   printf 'FEHLER handler: Timeout, kill oder Hintergrundlauf im Handler\n'; failed=1
 else
@@ -152,5 +154,23 @@ if [ -n "$trap_line" ] && [ -n "$first_switch" ] && [ "$trap_line" -lt "$first_s
 else
   printf 'FEHLER handler: trap fehlt oder steht nach cswap switch\n'; failed=1
 fi
+
+# Gegenseitiger Ausschluss: ein zweiter Klick während eines Wechsels wird abgewiesen, ohne
+# zu warten und ohne cswap switch. Eine verwaiste Sperre wird übernommen, und nach jedem
+# Lauf bleibt keine liegen.
+mkdir "$lock_dir" && printf '%s\n' "$$" > "$lock_dir/pid"
+expect "belegte Sperre mit lebender PID" 'claude-statusline://switch' 2 'A switch is already running.' 'cswap switch'
+rm -f "$lock_dir/pid"; rmdir "$lock_dir"
+sleep 0 & dead_pid=$!; wait "$dead_pid"
+mkdir "$lock_dir" && printf '%s\n' "$dead_pid" > "$lock_dir/pid"
+expect "verwaiste Sperre wird übernommen" 'claude-statusline://switch' 0 'cswap switch --json'
+if [ -e "$lock_dir" ]; then printf 'FEHLER handler: nach dem Lauf liegt noch eine Sperre\n'; failed=1
+else printf 'ok     handler (keine Sperre nach dem Lauf)\n'; fi
+mkdir "$lock_dir"
+expect "Sperre ohne PID gilt als verwaist" 'claude-statusline://switch' 0 'cswap switch --json'
+expect "abgewiesener Link nimmt keine Sperre" 'https://evil.example/switch' 2 '' 'cswap'
+if [ -e "$lock_dir" ]; then printf 'FEHLER handler: abgewiesener Link hinterlässt eine Sperre\n'; failed=1
+else printf 'ok     handler (abgewiesener Link hinterlässt keine Sperre)\n'; fi
+
 
 exit "$failed"
