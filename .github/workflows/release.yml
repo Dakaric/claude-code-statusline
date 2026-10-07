@@ -72,7 +72,7 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $tag" >&2
             exit 1
           fi
-          heading=$(grep -m1 -F "## $tag " CHANGELOG.md)
+          heading=$(awk -v hdr="## $tag " 'index($0, hdr) == 1 { print; exit }' CHANGELOG.md)
           case "$heading" in
             *YYYY-MM-DD*)
               echo "::error::CHANGELOG.md still has the placeholder date for $tag: $heading" >&2

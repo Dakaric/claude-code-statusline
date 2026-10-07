@@ -513,6 +513,7 @@ check_foreign_script_at_managed_path_kept() {
   elif ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "settings.json wurde verändert"
   elif [ -n "$(ls "$home"/.claude/statusline.sh.bak* 2>/dev/null)" ]; then fail "es wurde gesichert statt gefragt"
   elif ! grep -q 'did not create' "$sb/out"; then fail "kein Hinweis auf die fremde Datei"
+  elif grep -q 'Start a new Claude Code session' "$sb/out"; then fail "Abschluss behauptet eine fertige Statusline"
   elif [ "$(config_value swap)" != off ]; then fail "Swap-Teil lief nicht"
   else ok "fremdes Skript am verwalteten Pfad bleibt bei --yes"
   fi
@@ -588,6 +589,43 @@ check_interpreter_prefix_is_managed() {
   run_installer
   if ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "Befehl mit Argument wurde angefasst"
   else ok "Interpreter mit zusätzlichem Argument bleibt fremd"
+  fi
+  drop_sandbox
+}
+
+# Antwortet der Anwender mit Ja, wird die fremde Datei gesichert und ersetzt. --yes kann
+# das nicht auslösen (Vorgabe Nein), deshalb läuft install_statusline als Bibliothek mit
+# einer Rückfrage, die immer Ja sagt.
+check_foreign_script_replaced_on_yes() {
+  local lib
+  new_sandbox
+  lib="$sb/lib.sh"
+  sed '$d' "$root/install.sh" > "$lib"
+  mkdir -p "$home/.claude" "$sb/tmp/own"
+  printf '#!/bin/sh\necho meins\n' > "$home/.claude/statusline.sh"
+  cp "$home/.claude/statusline.sh" "$sb/foreign.sh"
+  # shellcheck source=install.sh
+  ( HOME=$home PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_RELEASE_DIR="$sb/release" FAKE_DIR="$root/tests/fakes"
+    export FAKE_LOG FAKE_RELEASE_DIR FAKE_DIR
+    . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; ask_yes_no() { return 0; }
+    install_statusline ) > "$sb/out" 2>&1
+  if ! cmp -s "$(ls "$home"/.claude/statusline.sh.bak-* 2>/dev/null | head -1)" "$sb/foreign.sh"; then
+    fail "Sicherung ist nicht die fremde Datei"
+  elif ! grep -q 'claude-code-statusline v' "$home/.claude/statusline.sh"; then fail "verwaltete Kopie nicht ersetzt"
+  else ok "fremdes Skript wird bei Ja gesichert und ersetzt"
+  fi
+  drop_sandbox
+}
+
+# Ein App-Pfad, der ein Link ist, weist --swap ab und sagt, was zu tun ist.
+check_swap_message_for_linked_app() {
+  new_sandbox
+  mkdir -p "$sb/outside" "$home/Applications"
+  ln -s "$sb/outside" "$home/Applications/Claude Statusline Switch.app"
+  printf '{"schemaVersion":1,"active":{"email":"a@example.com","managed":false}}\n' > "$sb/cswap/status.json"
+  FAKE_UNAME=Darwin run_installer --swap
+  if ! grep -q 'Remove or rename it' "$sb/out"; then fail "abgewiesener App-Pfad ohne Hinweis zum Beheben"
+  else ok "abgewiesener App-Pfad nennt den Ausweg"
   fi
   drop_sandbox
 }
@@ -956,6 +994,8 @@ check_existing_statusline_backed_up
 check_foreign_script_at_managed_path_kept
 check_backups_survive_update_and_uninstall
 check_uninstall_keeps_foreign_script
+check_foreign_script_replaced_on_yes
+check_swap_message_for_linked_app
 check_interpreter_prefix_is_managed
 check_bad_checksum_keeps_old_file
 check_missing_checksum_line_fails

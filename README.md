@@ -65,7 +65,7 @@ Every percentage colours itself: green under 50%, yellow from 50%, red from 80%.
 
 How long before your prompt cache expires and the next turn pays full price for the whole context again. The TTL is `1h` when `ENABLE_PROMPT_CACHING_1H` is set, otherwise `5m`.
 
-Every API call rewrites the cache and resets the TTL to full, not just on your input but on each step the agent takes while it works. So the reference point is the timestamp of the **last assistant message** in the transcript: the clock only starts once the agent is done. (The transcript's file mtime looks like the obvious source and isn't: hooks and background writers touch it without ever touching the cache, which pins the countdown at full.)
+Every API call rewrites the cache and resets the TTL to full, not just your input, but each step the agent takes while it works. So the reference point is the timestamp of the **last assistant message** in the transcript: the clock only starts once the agent is done. (The transcript's file mtime looks like the obvious source and isn't: hooks and background writers touch it without ever touching the cache, which pins the countdown at full.)
 
 It reads `47m12s/1h` → `12m03s/1h` → `2m41s/1h` → `cold`. Cyan while there's room, yellow in the last fifth, red once it's gone. `cold` is your cue that the next message rebuilds the cache from scratch, a good moment to hand off or `/clear` rather than pay for context you no longer need.
 
@@ -131,7 +131,7 @@ If you run a token-optimizer plugin that scores context health, its `UserPromptS
 curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash
 ```
 
-The installer downloads the latest release, checks it against the release's `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets the `statusLine` entry in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written next to it first. If `statusLine` already points at another script, it asks before replacing it. A file at `~/.claude/statusline.sh` that this installer did not create is never replaced without a yes: the default answer is no, and then the file and `settings.json` stay untouched. If you changed your own copy by hand, the installer saves each previous version as `~/.claude/statusline.sh.bak-<timestamp>` and never overwrites an earlier backup.
+The installer downloads the latest release, checks it against the release's `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets the `statusLine` entry in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written next to it first. If `statusLine` already points at another script, it asks before replacing it. A file at `~/.claude/statusline.sh` that this installer did not create is never replaced without a yes: the default answer is no, and then the file and `settings.json` stay untouched. Before replacing your copy, the installer saves the previous version as `~/.claude/statusline.sh.bak-<date>` and never overwrites an earlier backup.
 
 It also asks whether you use more than one Claude account. Say yes and it sets up [click-to-switch](#switch-accounts-with-a-click). Your answer is kept in `~/.claude/statusline/config`, so an update doesn't ask again.
 

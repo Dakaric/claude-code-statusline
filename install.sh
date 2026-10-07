@@ -818,6 +818,7 @@ uninstall() {
 }
 
 main() {
+  local statusline_installed=0
   require_bash
   parse_args "$@"
   init_paths
@@ -832,9 +833,16 @@ main() {
   make_tmp_dir
   # Eine fremde Datei am verwalteten Pfad bleibt, dann auch settings.json. Der Swap-Teil
   # hängt nicht an der Statusline-Datei und läuft trotzdem.
-  if install_statusline; then wire_settings; fi
+  if install_statusline; then
+    wire_settings
+    statusline_installed=1
+  fi
   setup_swap
-  info "Done. Start a new Claude Code session to see the status line."
+  if [ "$statusline_installed" = 1 ]; then
+    info "Done. Start a new Claude Code session to see the status line."
+  else
+    info "Done, but the status line itself was not installed (see above)."
+  fi
 }
 
 main "$@"
