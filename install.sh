@@ -442,34 +442,22 @@ pid_alive() {
   kill -0 "$1" 2>/dev/null
 }
 
-# Löst eine verwaiste Sperre ab und gibt 0 zurück, wenn die neue Sperre jetzt diesem
-# Handler gehört. Das Ablösen ist selbst gesperrt (ein zweiter Symlink gleicher Art): nur
-# ein Handler räumt ab, ein zweiter löscht also nie die frische Sperre des ersten. Ist auch
-# diese Absperrung verwaist, wird sie entfernt und dieser Klick abgewiesen.
-take_over_stale_lock() {
-  local guard="$LOCK_PATH.takeover" taken=1
-  if ! ln -sn "$$" "$guard" 2>/dev/null; then
-    pid_alive "$(readlink "$guard" 2>/dev/null)" || rm -f "$guard"
-    return 1
-  fi
-  if ! pid_alive "$(readlink "$LOCK_PATH" 2>/dev/null)"; then
-    rm -f "$LOCK_PATH"
-    ln -sn "$$" "$LOCK_PATH" 2>/dev/null && taken=0
-  fi
-  rm -f "$guard"
-  return "$taken"
-}
-
 # Immer nur ein Wechsel zugleich: Jeder Klick startet einen eigenen Handler, ein Doppelklick
 # also zwei cswap switch. Die Sperre ist ein Symlink, dessen Ziel die PID des Besitzers ist:
-# ln -s legt ihn atomar an, es gibt kein Fenster ohne PID. Lebt der Besitzer, wird der Klick
-# abgewiesen, ohne zu warten.
+# ln -s legt ihn atomar an, es gibt kein Fenster ohne PID. Entfernt wird sie nur vom
+# Besitzer, deshalb gibt es kein Ablösen und keinen Wettlauf darum. Eine Sperre eines
+# toten Besitzers bleibt nur nach kill -9 oder Stromausfall mitten im Wechsel liegen. cswap
+# rollt einen halben Wechsel nicht zurück, also soll der Anwender nachsehen. Das trap steht
+# vor dem ln; release_lock entfernt nur einen Link mit der eigenen PID.
 acquire_lock() {
-  if ! ln -sn "$$" "$LOCK_PATH" 2>/dev/null; then
-    pid_alive "$(readlink "$LOCK_PATH" 2>/dev/null)" && reject "A switch is already running."
-    take_over_stale_lock || reject "A switch is already running."
-  fi
+  local owner
   trap release_lock EXIT
+  # Ein Ordner am Sperrpfad: ln -sn würde den Link darin anlegen und "gelingen".
+  if [ -d "$LOCK_PATH" ] && [ ! -L "$LOCK_PATH" ]; then reject "A switch is already running."; fi
+  ln -sn "$$" "$LOCK_PATH" 2>/dev/null && return 0
+  owner=$(readlink "$LOCK_PATH" 2>/dev/null)
+  if [ -z "$owner" ] || pid_alive "$owner"; then reject "A switch is already running."; fi
+  reject "The previous switch did not finish. Check your account with cswap in a terminal, then delete $LOCK_PATH and click again."
 }
 
 # Gibt die Mail aus ?to= dekodiert aus. Kodiert erlaubt sind nur die Zeichen, die jq @uri

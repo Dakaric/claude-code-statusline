@@ -514,6 +514,7 @@ check_foreign_script_at_managed_path_kept() {
   elif [ -n "$(ls "$home"/.claude/statusline.sh.bak* 2>/dev/null)" ]; then fail "es wurde gesichert statt gefragt"
   elif ! grep -q 'did not create' "$sb/out"; then fail "kein Hinweis auf die fremde Datei"
   elif grep -q 'Start a new Claude Code session' "$sb/out"; then fail "Abschluss behauptet eine fertige Statusline"
+  elif ! grep -q 'Done, but the status line itself was not installed' "$sb/out"; then fail "Abschlusszeile fehlt"
   elif [ "$(config_value swap)" != off ]; then fail "Swap-Teil lief nicht"
   else ok "fremdes Skript am verwalteten Pfad bleibt bei --yes"
   fi
@@ -597,7 +598,7 @@ check_interpreter_prefix_is_managed() {
 # das nicht auslösen (Vorgabe Nein), deshalb läuft install_statusline als Bibliothek mit
 # einer Rückfrage, die immer Ja sagt.
 check_foreign_script_replaced_on_yes() {
-  local lib
+  local lib backups
   new_sandbox
   lib="$sb/lib.sh"
   sed '$d' "$root/install.sh" > "$lib"
@@ -609,8 +610,9 @@ check_foreign_script_replaced_on_yes() {
     export FAKE_LOG FAKE_RELEASE_DIR FAKE_DIR
     . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; ask_yes_no() { return 0; }
     install_statusline ) > "$sb/out" 2>&1
-  if [ "$(cat "$home"/.claude/statusline.sh.bak-* 2>/dev/null)" != "$(cat "$sb/foreign.sh")" ]; then
-    fail "Sicherung ist nicht die fremde Datei"
+  backups=("$home"/.claude/statusline.sh.bak-*)
+  if [ "${#backups[@]}" != 1 ] || [ ! -f "${backups[0]}" ]; then fail "es gibt nicht genau eine Sicherung"
+  elif ! cmp -s "${backups[0]}" "$sb/foreign.sh"; then fail "Sicherung ist nicht die fremde Datei"
   elif ! grep -q 'claude-code-statusline v' "$home/.claude/statusline.sh"; then fail "verwaltete Kopie nicht ersetzt"
   else ok "fremdes Skript wird bei Ja gesichert und ersetzt"
   fi

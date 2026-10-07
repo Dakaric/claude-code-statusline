@@ -111,6 +111,8 @@ The numbers behind the hint are on the line, so you can check it rather than tru
 
 With more than one account, the end of the limits line can be a link: `-> B` when the status line recommends a switch, otherwise `⇄`. Cmd+click (Ctrl+click in most Linux terminals) switches right away, `-> B` to account B and `⇄` to the next account in line, and a notification tells you where you landed. Your terminal needs to support OSC 8 hyperlinks.
 
+A second click while a switch is still running is turned away. If a switch was interrupted for good (the process was killed or the machine lost power), the next click says so and does nothing: check your account with `cswap` in a terminal, then delete `~/.claude/statusline/switch.lock` and click again.
+
 The switching itself is done by [claude-swap](https://github.com/realiti4/claude-swap) (`cswap`). The installer sets it up when you tell it you use more than one account: it installs `cswap` with `uv` or `pipx`, adds the account you are logged into, and registers a handler for `claude-statusline://` links, a small app in `~/Applications` on macOS and a desktop entry on Linux. On macOS the app is only built when `~/Applications` is a real folder, not a symlink; otherwise the installer warns and leaves click-to-switch off. To add another account, run `/login` in Claude Code without logging out first, then `cswap add`.
 
 The link only appears once that handler is installed, so the line never shows a link that does nothing. The handler only switches between accounts `cswap` already manages and ignores every other address. The Linux handler is tested in CI, not yet on a real desktop.
@@ -131,7 +133,7 @@ If you run a token-optimizer plugin that scores context health, its `UserPromptS
 curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash
 ```
 
-The installer downloads the latest release, checks it against the release's `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets the `statusLine` entry in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written next to it first. If `statusLine` already points at another script, it asks before replacing it. A file at `~/.claude/statusline.sh` that this installer did not create is never replaced without a yes: the default answer is no, and then the file and `settings.json` stay untouched. Before replacing your copy, the installer saves the previous version as `~/.claude/statusline.sh.bak-<date>` and never overwrites an earlier backup.
+The installer downloads the latest release, checks it against the release's `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets the `statusLine` entry in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written next to it first. If `statusLine` already points at another script, it asks before replacing it. A file at `~/.claude/statusline.sh` that this installer did not create is never replaced without a yes: the default answer is no, and then the file and `settings.json` stay untouched. Before replacing your copy, the installer saves the previous version as `~/.claude/statusline.sh.bak-<timestamp>` and never overwrites an earlier backup.
 
 It also asks whether you use more than one Claude account. Say yes and it sets up [click-to-switch](#switch-accounts-with-a-click). Your answer is kept in `~/.claude/statusline/config`, so an update doesn't ask again.
 
