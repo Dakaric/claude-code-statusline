@@ -11,9 +11,9 @@
 
 # claude-code-statusline
 
-A drop-in status line for [Claude Code](https://claude.com/claude-code) that puts everything you actually glance at on **two tidy lines**: where you are and what you're running up top, and every live metric (context window, prompt-cache TTL, rate limits and weekly pacing) underneath.
+A drop-in status line for [Claude Code](https://claude.com/claude-code) that puts everything you actually glance at on **four tidy lines**: where you are and what you're running up top, and every live metric (context window, prompt-cache TTL, rate limits and weekly pacing) underneath.
 
-A single `bash` script, one `jq` pass per refresh. No daemon, nothing to configure. The status line itself needs only `jq`; the installer and click-to-switch need a few more tools, listed under [Requirements](#requirements).
+A single `bash` script with a few batched `jq` calls per refresh. No daemon, nothing to configure. The status line itself needs only `jq`; the installer and click-to-switch need a few more tools, listed under [Requirements](#requirements).
 
 > Unofficial. Not affiliated with or endorsed by Anthropic. It reads the JSON that Claude Code already pipes to its status line command. Nothing else.
 
