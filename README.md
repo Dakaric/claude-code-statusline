@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/hero.png" alt="claude-code-statusline: a four-line status line for Claude Code" width="100%">
-</p>
+https://github.com/user-attachments/assets/4130ff81-2064-4244-9fd7-de319b3ddbcb
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Dakaric/claude-code-statusline?color=blue" alt="License: MIT"></a>
