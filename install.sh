@@ -355,6 +355,110 @@ wire_settings() {
   info "Set statusLine in $SETTINGS_PATH."
 }
 
+# --- Klick-Handler ---
+# Der Rumpf steht hier als Heredoc, damit das Release eine einzige Installer-Datei
+# bleibt. write_switch_handler setzt davor die absoluten Pfade von cswap und jq: vom
+# Betriebssystem aufgerufen hat der Handler keinen verlässlichen PATH.
+handler_body() {
+  cat <<'SWITCH_HANDLER'
+# shellcheck shell=bash
+# Klick-Handler für claude-statusline://switch, erzeugt von install.sh.
+#
+# Erlaubt ist nur claude-statusline://switch, optional mit ?to=<mail>. Ein Ziel gilt nur,
+# wenn cswap genau ein Konto mit dieser Mail verwaltet; gewechselt wird dann über dessen
+# Nummer, damit genau das geprüfte Konto getroffen wird. So kann auch eine Webseite, die
+# das Schema aufruft, nur zwischen den eigenen Konten wechseln.
+# cswap switch läuft ohne Timeout und wird nie abgebrochen: cswap rollt einen
+# abgebrochenen Tausch nicht zurück, ein halber Login wäre die Folge.
+set -u
+: "${CSWAP_BIN:?}" "${JQ_BIN:?}"
+
+notify() {
+  local title="Claude Statusline" body=$1
+  case "$(uname -s)" in
+    Darwin)
+      osascript -e 'on run argv' \
+        -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+        -e 'end run' "$title" "$body" >/dev/null 2>&1 && return 0 ;;
+    *)
+      command -v notify-send >/dev/null 2>&1 \
+        && notify-send "$title" "$body" >/dev/null 2>&1 && return 0 ;;
+  esac
+  printf '%s: %s\n' "$title" "$body" >&2
+}
+
+reject() {
+  notify "$1"
+  exit 2
+}
+
+# Gibt die Mail aus ?to= dekodiert aus. Kodiert erlaubt sind nur die Zeichen, die jq @uri
+# für eine Mail erzeugt (%40 für @, %2B für +, %25 für %), dekodiert nur eine Mail-Adresse.
+decode_target() {
+  local raw=$1 decoded
+  local raw_re='^([A-Za-z0-9._~-]|%40|%2[Bb5])+$'
+  local mail_re='^[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+$'
+  [[ $raw =~ $raw_re ]] || return 1
+  printf -v decoded '%b' "${raw//%/\\x}"
+  [[ $decoded =~ $mail_re ]] || return 1
+  printf '%s' "$decoded"
+}
+
+# Die Nummer des einen Kontos mit dieser Mail, "none" oder "ambiguous".
+account_number() {
+  # shellcheck disable=SC2016  # $mail ist eine jq-Variable, die Shell soll sie nicht sehen
+  printf '%s' "$2" | "$JQ_BIN" -r --arg mail "$1" '
+    [.accounts[]? | select((.email // "" | ascii_downcase) == ($mail | ascii_downcase)) | .number]
+    | if length == 1 then .[0] | tostring
+      elif length == 0 then "none"
+      else "ambiguous" end' 2>/dev/null
+}
+
+main() {
+  local url=${1:-} target="" mail list number result message
+  case "$url" in
+    "claude-statusline://switch") ;;
+    "claude-statusline://switch?to="*) target=${url#*\?to=} ;;
+    *) reject "Ignored a link that is not a claude-statusline switch link." ;;
+  esac
+  if [ -z "$target" ] && [ "$url" != "claude-statusline://switch" ]; then
+    reject "Ignored a switch link without an account."
+  fi
+  if [ -n "$target" ]; then
+    mail=$(decode_target "$target") || reject "Ignored a switch link with an invalid account."
+    list=$("$CSWAP_BIN" list --json 2>/dev/null) || reject "Could not read the accounts from cswap."
+    number=$(account_number "$mail" "$list")
+    case "$number" in
+      none) reject "$mail is not an account managed by cswap." ;;
+      ambiguous) reject "$mail matches more than one cswap account. Switch with cswap in a terminal." ;;
+      ""|*[!0-9]*) reject "Could not read the accounts from cswap." ;;
+    esac
+    result=$("$CSWAP_BIN" switch "$number" --json 2>/dev/null)
+  else
+    result=$("$CSWAP_BIN" switch --json 2>/dev/null)
+  fi
+  message=$(printf '%s' "$result" | "$JQ_BIN" -r '.message // .error.message // empty' 2>/dev/null)
+  notify "${message:-cswap did not report a result.}"
+  return 0
+}
+
+main "$@"
+SWITCH_HANDLER
+}
+
+write_switch_handler() {
+  local cswap_bin=$1 jq_bin=$2 tmp="$HANDLER_PATH.tmp.$$"
+  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  if ! {
+    printf '#!/usr/bin/env bash\n'
+    printf 'CSWAP_BIN=%q\nJQ_BIN=%q\n' "$cswap_bin" "$jq_bin"
+    handler_body
+  } > "$tmp" || ! chmod 755 "$tmp" || ! mv -f "$tmp" "$HANDLER_PATH"; then
+    rm -f "$tmp"
+    die "cannot write $HANDLER_PATH"
+  fi
+}
+
 main() {
   require_bash
   parse_args "$@"
