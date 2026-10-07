@@ -304,12 +304,17 @@ current_statusline_command() {
 }
 
 # Der Dateipfad hinter einem statusLine-Befehl: ein einzelner Pfad, mit ~/ am Anfang oder
-# absolut. Alles andere, etwa ein Befehl mit Argumenten, ergibt keinen Pfad.
+# absolut, höchstens mit "bash " oder "sh " davor. Alles andere, etwa ein Befehl mit
+# weiteren Argumenten, ergibt keinen Pfad.
 command_path() {
-  case "$1" in
+  local command=$1
+  case "$command" in
+    "bash "*|"sh "*) command=${command#* } ;;
+  esac
+  case "$command" in
     ""|*[[:space:]]*) return 1 ;;
-    \~/*) printf '%s' "$HOME/${1#\~/}" ;;
-    /*) printf '%s' "$1" ;;
+    \~/*) printf '%s' "$HOME/${command#\~/}" ;;
+    /*) printf '%s' "$command" ;;
     *) return 1 ;;
   esac
 }

@@ -558,6 +558,40 @@ check_uninstall_keeps_foreign_script() {
   drop_sandbox
 }
 
+# Ein Interpreter-Präfix vor dem Pfad ("bash ~/.claude/statusline.sh") ändert nichts daran,
+# dass der Befehl auf die verwaltete Kopie zeigt. Ein weiteres Argument dahinter tut es.
+check_interpreter_prefix_is_managed() {
+  local prefix
+  for prefix in bash sh; do
+    new_sandbox
+    run_installer
+    jq --arg c "$prefix $managed_command" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+    mv "$sb/s.json" "$home/.claude/settings.json"
+    run_installer
+    if grep -q 'another status line\|another copy' "$sb/out"; then fail "$prefix-Präfix gilt als fremd"
+    elif [ "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" != "$managed_command" ]; then
+      fail "$prefix-Präfix wird nicht auf die verwaltete Kopie gebracht"
+    fi
+    jq --arg c "$prefix $managed_command" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+    mv "$sb/s.json" "$home/.claude/settings.json"
+    run_installer --uninstall
+    if jq -e 'has("statusLine")' "$home/.claude/settings.json" >/dev/null; then fail "--uninstall lässt statusLine mit $prefix-Präfix stehen"
+    else ok "$prefix-Präfix gilt als verwaltete Kopie"
+    fi
+    drop_sandbox
+  done
+  new_sandbox
+  run_installer
+  jq --arg c "bash $managed_command --flag" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+  mv "$sb/s.json" "$home/.claude/settings.json"
+  cp "$home/.claude/settings.json" "$sb/original.json"
+  run_installer
+  if ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "Befehl mit Argument wurde angefasst"
+  else ok "Interpreter mit zusätzlichem Argument bleibt fremd"
+  fi
+  drop_sandbox
+}
+
 # Ein Ordner an der Stelle der verwalteten Kopie darf nicht dazu führen, dass mv die Datei
 # hineinschiebt.
 check_statusline_is_directory() {
@@ -922,6 +956,7 @@ check_existing_statusline_backed_up
 check_foreign_script_at_managed_path_kept
 check_backups_survive_update_and_uninstall
 check_uninstall_keeps_foreign_script
+check_interpreter_prefix_is_managed
 check_bad_checksum_keeps_old_file
 check_missing_checksum_line_fails
 check_invalid_settings_aborts
