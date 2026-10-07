@@ -9,7 +9,7 @@ sb=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$sb"' EXIT
 
 mkdir -p "$sb/bin" "$sb/cswap" "$sb/with space"
-for tool in bash cat mkdir rm rmdir readlink dirname; do ln -s "$(command -v "$tool")" "$sb/bin/$tool"; done
+for tool in bash cat ln rm readlink dirname; do ln -s "$(command -v "$tool")" "$sb/bin/$tool"; done
 for tool in uname osascript notify-send; do ln -s "$root/tests/fakes/$tool" "$sb/bin/$tool"; done
 
 # Der Handler entsteht über write_switch_handler aus install.sh, nicht über einen
@@ -26,8 +26,8 @@ jq_path=$(command -v jq)
   write_switch_handler "$cswap_path" "$jq_path"
 ) || { printf 'FEHLER handler: write_switch_handler scheitert\n'; exit 1; }
 
-lock_dir="$sb/switch.lock"
-want_head=$(printf '#!/usr/bin/env bash\nCSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_DIR=%q' "$cswap_path" "$jq_path" "$lock_dir")
+lock_path="$sb/switch.lock"
+want_head=$(printf '#!/usr/bin/env bash\nCSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_PATH=%q' "$cswap_path" "$jq_path" "$lock_path")
 if [ "$(sed -n '1,4p' "$sb/handler.sh")" = "$want_head" ]; then printf 'ok     handler (Kopf aus write_switch_handler)\n'
 else printf 'FEHLER handler: Kopf weicht ab\n'; sed -n '1,4p' "$sb/handler.sh"; failed=1; fi
 if [ -x "$sb/handler.sh" ]; then printf 'ok     handler (ausführbar)\n'
@@ -155,22 +155,37 @@ else
   printf 'FEHLER handler: trap fehlt oder steht nach cswap switch\n'; failed=1
 fi
 
-# Gegenseitiger Ausschluss: ein zweiter Klick während eines Wechsels wird abgewiesen, ohne
-# zu warten und ohne cswap switch. Eine verwaiste Sperre wird übernommen, und nach jedem
-# Lauf bleibt keine liegen.
-mkdir "$lock_dir" && printf '%s\n' "$$" > "$lock_dir/pid"
+# Gegenseitiger Ausschluss: Die Sperre ist ein Symlink, dessen Ziel die PID des Besitzers
+# ist. Ein zweiter Klick während eines Wechsels wird abgewiesen, ohne zu warten und ohne
+# cswap switch, und rührt die fremde Sperre nicht an. Eine verwaiste Sperre wird
+# übernommen, und nach jedem Lauf bleibt keine liegen.
+lock_exists() { [ -e "$lock_path" ] || [ -L "$lock_path" ]; }
+ln -s "$$" "$lock_path"
 expect "belegte Sperre mit lebender PID" 'claude-statusline://switch' 2 'A switch is already running.' 'cswap switch'
-rm -f "$lock_dir/pid"; rmdir "$lock_dir"
+if [ "$(readlink "$lock_path")" = "$$" ]; then printf 'ok     handler (abgewiesener Klick lässt die fremde Sperre stehen)\n'
+else printf 'FEHLER handler: abgewiesener Klick hat die fremde Sperre angefasst\n'; failed=1; fi
+rm -f "$lock_path"
 sleep 0 & dead_pid=$!; wait "$dead_pid"
-mkdir "$lock_dir" && printf '%s\n' "$dead_pid" > "$lock_dir/pid"
+ln -s "$dead_pid" "$lock_path"
 expect "verwaiste Sperre wird übernommen" 'claude-statusline://switch' 0 'cswap switch --json'
-if [ -e "$lock_dir" ]; then printf 'FEHLER handler: nach dem Lauf liegt noch eine Sperre\n'; failed=1
+if lock_exists || [ -L "$lock_path.takeover" ]; then printf 'FEHLER handler: nach dem Lauf liegt noch eine Sperre\n'; failed=1
 else printf 'ok     handler (keine Sperre nach dem Lauf)\n'; fi
-mkdir "$lock_dir"
-expect "Sperre ohne PID gilt als verwaist" 'claude-statusline://switch' 0 'cswap switch --json'
+# Eine verwaiste Absperrung des Ablösens weist genau einen Klick ab und verschwindet dabei.
+ln -s "$dead_pid" "$lock_path"; ln -s "$dead_pid" "$lock_path.takeover"
+expect "verwaiste Absperrung weist einen Klick ab" 'claude-statusline://switch' 2 'A switch is already running.' 'cswap switch'
+if [ -L "$lock_path.takeover" ]; then printf 'FEHLER handler: verwaiste Absperrung bleibt liegen\n'; failed=1
+else printf 'ok     handler (verwaiste Absperrung wird entfernt)\n'; fi
+expect "danach wird die verwaiste Sperre abgelöst" 'claude-statusline://switch' 0 'cswap switch --json'
+ln -s "keine-pid" "$lock_path"
+expect "Sperre mit unlesbarem Besitzer gilt als verwaist" 'claude-statusline://switch' 0 'cswap switch --json'
+if lock_exists; then printf 'FEHLER handler: Sperre nach Übernahme übrig\n'; failed=1
+else printf 'ok     handler (keine Sperre nach Übernahme)\n'; fi
 expect "abgewiesener Link nimmt keine Sperre" 'https://evil.example/switch' 2 '' 'cswap'
-if [ -e "$lock_dir" ]; then printf 'FEHLER handler: abgewiesener Link hinterlässt eine Sperre\n'; failed=1
-else printf 'ok     handler (abgewiesener Link hinterlässt keine Sperre)\n'; fi
-
+expect "unbekanntes Ziel nimmt keine Sperre" 'claude-statusline://switch?to=c%40example.com' 2 'is not an account managed' 'cswap switch'
+if lock_exists; then printf 'FEHLER handler: abgewiesener Link hinterlässt eine Sperre\n'; failed=1
+else printf 'ok     handler (abgewiesene Links hinterlassen keine Sperre)\n'; fi
+FAKE_UNAME=Linux expect "Sperre auch unter Linux" 'claude-statusline://switch' 0 'cswap switch --json'
+if lock_exists; then printf 'FEHLER handler: unter Linux bleibt eine Sperre\n'; failed=1
+else printf 'ok     handler (keine Sperre nach dem Lauf unter Linux)\n'; fi
 
 exit "$failed"

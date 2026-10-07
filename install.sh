@@ -406,7 +406,7 @@ handler_body() {
 # cswap switch läuft ohne Timeout und wird nie abgebrochen: cswap rollt einen
 # abgebrochenen Tausch nicht zurück, ein halber Login wäre die Folge.
 set -u
-: "${CSWAP_BIN:?}" "${JQ_BIN:?}" "${LOCK_DIR:?}"
+: "${CSWAP_BIN:?}" "${JQ_BIN:?}" "${LOCK_PATH:?}"
 
 notify() {
   local title="Claude Statusline" body=$1
@@ -427,27 +427,49 @@ reject() {
   exit 2
 }
 
+# Die Sperre gibt nur frei, wer sie selbst angelegt hat.
 release_lock() {
-  rm -f "$LOCK_DIR/pid"
-  rmdir "$LOCK_DIR" 2>/dev/null
+  if [ "$(readlink "$LOCK_PATH" 2>/dev/null)" = "$$" ]; then
+    rm -f "$LOCK_PATH"
+  fi
+}
+
+# Ist dieses Ziel die PID eines lebenden Prozesses? Alles andere zählt als tot.
+pid_alive() {
+  case "$1" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$1" 2>/dev/null
+}
+
+# Löst eine verwaiste Sperre ab und gibt 0 zurück, wenn die neue Sperre jetzt diesem
+# Handler gehört. Das Ablösen ist selbst gesperrt (ein zweiter Symlink gleicher Art): nur
+# ein Handler räumt ab, ein zweiter löscht also nie die frische Sperre des ersten. Ist auch
+# diese Absperrung verwaist, wird sie entfernt und dieser Klick abgewiesen.
+take_over_stale_lock() {
+  local guard="$LOCK_PATH.takeover" taken=1
+  if ! ln -sn "$$" "$guard" 2>/dev/null; then
+    pid_alive "$(readlink "$guard" 2>/dev/null)" || rm -f "$guard"
+    return 1
+  fi
+  if ! pid_alive "$(readlink "$LOCK_PATH" 2>/dev/null)"; then
+    rm -f "$LOCK_PATH"
+    ln -sn "$$" "$LOCK_PATH" 2>/dev/null && taken=0
+  fi
+  rm -f "$guard"
+  return "$taken"
 }
 
 # Immer nur ein Wechsel zugleich: Jeder Klick startet einen eigenen Handler, ein Doppelklick
-# also zwei cswap switch. Wer die Sperre belegt findet und deren PID lebt, wird abgewiesen,
-# ohne zu warten. Eine Sperre mit toter oder fehlender PID ist verwaist und wird übernommen.
+# also zwei cswap switch. Die Sperre ist ein Symlink, dessen Ziel die PID des Besitzers ist:
+# ln -s legt ihn atomar an, es gibt kein Fenster ohne PID. Lebt der Besitzer, wird der Klick
+# abgewiesen, ohne zu warten.
 acquire_lock() {
-  local owner=""
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    [ -f "$LOCK_DIR/pid" ] && owner=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-    case "$owner" in
-      ""|*[!0-9]*) ;;
-      *) kill -0 "$owner" 2>/dev/null && reject "A switch is already running." ;;
-    esac
-    release_lock
-    mkdir "$LOCK_DIR" 2>/dev/null || reject "A switch is already running."
+  if ! ln -sn "$$" "$LOCK_PATH" 2>/dev/null; then
+    pid_alive "$(readlink "$LOCK_PATH" 2>/dev/null)" && reject "A switch is already running."
+    take_over_stale_lock || reject "A switch is already running."
   fi
   trap release_lock EXIT
-  printf '%s\n' "$$" > "$LOCK_DIR/pid"
 }
 
 # Gibt die Mail aus ?to= dekodiert aus. Kodiert erlaubt sind nur die Zeichen, die jq @uri
@@ -516,7 +538,7 @@ write_switch_handler() {
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   if ! {
     printf '#!/usr/bin/env bash\n'
-    printf 'CSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_DIR=%q\n' "$cswap_bin" "$jq_bin" "$STATE_DIR/switch.lock"
+    printf 'CSWAP_BIN=%q\nJQ_BIN=%q\nLOCK_PATH=%q\n' "$cswap_bin" "$jq_bin" "$STATE_DIR/switch.lock"
     handler_body
   } > "$tmp" || ! chmod 755 "$tmp" || ! mv -f "$tmp" "$HANDLER_PATH"; then
     rm -f "$tmp"

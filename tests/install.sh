@@ -609,7 +609,7 @@ check_foreign_script_replaced_on_yes() {
     export FAKE_LOG FAKE_RELEASE_DIR FAKE_DIR
     . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; ask_yes_no() { return 0; }
     install_statusline ) > "$sb/out" 2>&1
-  if ! cmp -s "$(ls "$home"/.claude/statusline.sh.bak-* 2>/dev/null | head -1)" "$sb/foreign.sh"; then
+  if [ "$(cat "$home"/.claude/statusline.sh.bak-* 2>/dev/null)" != "$(cat "$sb/foreign.sh")" ]; then
     fail "Sicherung ist nicht die fremde Datei"
   elif ! grep -q 'claude-code-statusline v' "$home/.claude/statusline.sh"; then fail "verwaltete Kopie nicht ersetzt"
   else ok "fremdes Skript wird bei Ja gesichert und ersetzt"
