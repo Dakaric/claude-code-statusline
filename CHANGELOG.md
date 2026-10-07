@@ -2,7 +2,7 @@
 
 What changed in each release, in plain words. Newest first.
 
-## 1.6.1 - YYYY-MM-DD
+## 1.6.1 - 2026-10-07
 
 ### Changed
 
