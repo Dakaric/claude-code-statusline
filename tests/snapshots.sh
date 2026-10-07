@@ -64,21 +64,20 @@ check_stray_files_do_not_block_writes() {
   printf 'ok     snapshots (Streudateien blockieren nichts)\n'
 }
 
-# Die Mail kommt aus ~/.claude.json und gehoert dem Login. Beide Snapshots tragen nach
-# einem Lauf ihre eigene: A die aus claude.json, B die aus seinem alten Snapshot.
+# Die Mail kommt aus ~/.claude.json und gehoert dem Login: nach einem Lauf traegt der
+# Snapshot von A die Mail aus claude.json. Bs Snapshot gehoert nicht zu diesem Lauf, den
+# Fall deckt der naechste Check ab.
 check_mail_follows_login() {
-  local sandbox accounts mail_a mail_b
+  local sandbox accounts mail_a
   sandbox=$(mktemp -d)
   accounts="$sandbox/.claude/statusline-accounts"
   HOME="$sandbox" STATUSLINE_NOW="$test_now" \
     bash "$root/tests/setup/link-handler-ziel.sh" "$sandbox" >/dev/null
   run_statusline "$sandbox" zwei-accounts
   mail_a=$(jq -r '.email // ""' "$accounts/$acct_a.json")
-  mail_b=$(jq -r '.email // ""' "$accounts/$acct_b.json")
   rm -rf "$sandbox"
-  if [ "$mail_a" != a@example.com ] || [ "$mail_b" != b@example.com ]; then
-    printf 'FEHLER snapshots: Mails A=%s B=%s, erwartet a@example.com und b@example.com\n' \
-      "$mail_a" "$mail_b"
+  if [ "$mail_a" != a@example.com ]; then
+    printf 'FEHLER snapshots: Mail von A ist %s, erwartet a@example.com\n' "$mail_a"
     return 1
   fi
   printf 'ok     snapshots (Mail landet beim Login)\n'

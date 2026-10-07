@@ -269,7 +269,7 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
       (if $me.uuid then ($me.fh_used | round) else "" end),
       ($me.rate_limits.five_hour.resets_at | numbers) // "",
       ($target.email // "" | tostring
-       | if test("^[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+$") then @uri else "" end)
+       | if test("\\A[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+\\z") then @uri else "" end)
     ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 acct_n="${acct_n:-0}"
 
