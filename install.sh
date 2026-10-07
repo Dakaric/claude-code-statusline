@@ -382,7 +382,7 @@ notify() {
         -e 'end run' "$title" "$body" >/dev/null 2>&1 && return 0 ;;
     *)
       command -v notify-send >/dev/null 2>&1 \
-        && notify-send "$title" "$body" >/dev/null 2>&1 && return 0 ;;
+        && notify-send -- "$title" "$body" >/dev/null 2>&1 && return 0 ;;
   esac
   printf '%s: %s\n' "$title" "$body" >&2
 }
@@ -404,14 +404,17 @@ decode_target() {
   printf '%s' "$decoded"
 }
 
-# Die Nummer des einen Kontos mit dieser Mail, "none" oder "ambiguous".
+# Die Nummer des einen Kontos mit dieser Mail, "none" oder "ambiguous". Eine andere
+# schemaVersion als 1 ergibt "unsupported", das der Aufrufer wie eine gescheiterte Liste behandelt.
 account_number() {
   # shellcheck disable=SC2016  # $mail ist eine jq-Variable, die Shell soll sie nicht sehen
   printf '%s' "$2" | "$JQ_BIN" -r --arg mail "$1" '
+    if .schemaVersion != 1 then "unsupported" else
     [.accounts[]? | select((.email // "" | ascii_downcase) == ($mail | ascii_downcase)) | .number]
     | if length == 1 then .[0] | tostring
       elif length == 0 then "none"
-      else "ambiguous" end' 2>/dev/null
+      else "ambiguous" end
+    end' 2>/dev/null
 }
 
 main() {
@@ -433,8 +436,10 @@ main() {
       ambiguous) reject "$mail matches more than one cswap account. Switch with cswap in a terminal." ;;
       ""|*[!0-9]*) reject "Could not read the accounts from cswap." ;;
     esac
+    trap '' HUP INT TERM
     result=$("$CSWAP_BIN" switch "$number" --json 2>/dev/null)
   else
+    trap '' HUP INT TERM
     result=$("$CSWAP_BIN" switch --json 2>/dev/null)
   fi
   message=$(printf '%s' "$result" | "$JQ_BIN" -r '.message // .error.message // empty' 2>/dev/null)

@@ -3,19 +3,34 @@
 # herausgelöst und mit einem Kopf versehen, wie install.sh ihn schreibt.
 set -u
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 failed=0
-sb=$(mktemp -d)
-trap 'rm -rf "$sb"' EXIT
+sb=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$sb"' EXIT
 
-mkdir -p "$sb/bin" "$sb/cswap"
+mkdir -p "$sb/bin" "$sb/cswap" "$sb/with space"
 for tool in bash cat; do ln -s "$(command -v "$tool")" "$sb/bin/$tool"; done
 for tool in uname osascript notify-send; do ln -s "$root/tests/fakes/$tool" "$sb/bin/$tool"; done
-{
-  printf '#!/usr/bin/env bash\n'
-  printf 'CSWAP_BIN=%q\nJQ_BIN=%q\n' "$root/tests/fakes/cswap" "$(command -v jq)"
-  bash "$root/tests/extract-handler.sh"
-} > "$sb/handler.sh"
+
+# Der Handler entsteht über write_switch_handler aus install.sh, nicht über einen
+# nachgebauten Kopf. Der Pfad mit Leerzeichen prüft die %q-Maskierung mit.
+cswap_path="$sb/with space/cswap"
+cp "$root/tests/fakes/cswap" "$cswap_path"
+jq_path=$(command -v jq)
+# shellcheck disable=SC2034,SC2329  # HANDLER_PATH, STATE_DIR und die() liest write_switch_handler
+(
+  HANDLER_PATH="$sb/handler.sh"
+  STATE_DIR="$sb"
+  die() { printf 'handler: %s\n' "$*" >&2; exit 1; }
+  eval "$(sed '$d' "$root/install.sh")"
+  write_switch_handler "$cswap_path" "$jq_path"
+) || { printf 'FEHLER handler: write_switch_handler scheitert\n'; exit 1; }
+
+want_head=$(printf '#!/usr/bin/env bash\nCSWAP_BIN=%q\nJQ_BIN=%q' "$cswap_path" "$jq_path")
+if [ "$(sed -n '1,3p' "$sb/handler.sh")" = "$want_head" ]; then printf 'ok     handler (Kopf aus write_switch_handler)\n'
+else printf 'FEHLER handler: Kopf weicht ab\n'; sed -n '1,3p' "$sb/handler.sh"; failed=1; fi
+if [ -x "$sb/handler.sh" ]; then printf 'ok     handler (ausführbar)\n'
+else printf 'FEHLER handler: Datei nicht ausführbar\n'; failed=1; fi
 
 cat > "$sb/cswap/list.json" <<'JSON'
 {"schemaVersion":1,"accounts":[
@@ -65,12 +80,25 @@ expect "Zeilenumbruch im Ziel" 'claude-statusline://switch?to=%0Ab%40example.com
 expect "Nullbyte im Ziel" 'claude-statusline://switch?to=b%40example.com%00' 2 '' 'cswap switch'
 expect "doppeltes Ziel" 'claude-statusline://switch?to=b%40example.com?to=a%40example.com' 2 '' 'cswap switch'
 expect "Fragment" 'claude-statusline://switch?to=b%40example.com#x' 2 '' 'cswap switch'
+expect "Schrägstrich kodiert" 'claude-statusline://switch?to=b%2Fx%40example.com' 2 '' 'cswap switch'
+expect "Backslash kodiert" 'claude-statusline://switch?to=b%5Cx%40example.com' 2 '' 'cswap switch'
+expect "Leerzeichen kodiert" 'claude-statusline://switch?to=b%20x%40example.com' 2 '' 'cswap switch'
+expect "Schema in Großbuchstaben" 'CLAUDE-STATUSLINE://switch' 2 '' 'cswap'
+expect "doppelt kodiert" 'claude-statusline://switch?to=b%2540example.com' 2 '' 'cswap switch'
+expect "Ziel ohne Mail" 'claude-statusline://switch?to=%40' 2 '' 'cswap switch'
 
 cat > "$sb/cswap/list.json" <<'JSON'
 {"schemaVersion":1,"accounts":[
   {"number":1,"email":"a@example.com"},{"number":3,"email":"a+b@example.com"}]}
 JSON
 expect "Plus in der Mail" 'claude-statusline://switch?to=a%2Bb%40example.com' 0 'cswap switch 3 --json'
+
+printf '{"schemaVersion":2,"accounts":[{"number":2,"email":"b@example.com"}]}\n' > "$sb/cswap/list.json"
+expect "unbekannte Schemaversion von cswap list" 'claude-statusline://switch?to=b%40example.com' 2 'Could not read the accounts' 'cswap switch'
+cat > "$sb/cswap/list.json" <<'JSON'
+{"schemaVersion":1,"accounts":[
+  {"number":1,"email":"a@example.com"},{"number":3,"email":"a+b@example.com"}]}
+JSON
 
 printf '1\n' > "$sb/cswap/list.exit"
 expect "cswap list scheitert" 'claude-statusline://switch?to=a%40example.com' 2 'Could not read the accounts' 'cswap switch'
@@ -87,15 +115,19 @@ printf '{"schemaVersion":1,"error":{"type":"X","message":"No account found with 
 printf '1\n' > "$sb/cswap/switch.exit"
 expect "cswap-Fehler wird gemeldet" 'claude-statusline://switch' 0 'No account found with identifier: 9'
 
-FAKE_UNAME=Linux expect "Mitteilung unter Linux" 'claude-statusline://switch' 0 'notify-send Claude Statusline'
+FAKE_UNAME=Linux expect "Mitteilung unter Linux" 'claude-statusline://switch' 0 'notify-send -- Claude Statusline'
 rm -f "$sb/bin/notify-send"
 FAKE_UNAME=Linux run_handler 'claude-statusline://switch'
 if grep -q 'No account found' "$sb/out"; then printf 'ok     handler (ohne notify-send auf stderr)\n'
 else printf 'FEHLER handler ohne notify-send: keine Meldung auf stderr\n'; failed=1; fi
 
 FAKE_FAIL=osascript run_handler 'claude-statusline://switch'
-if grep -q '^Claude Statusline: ' "$sb/out"; then printf 'ok     handler (scheitert osascript, steht die Meldung auf stderr)\n'
+if [ "$rc" = 0 ] && grep -q '^Claude Statusline: ' "$sb/out"; then printf 'ok     handler (scheitert osascript, steht die Meldung auf stderr)\n'
 else printf 'FEHLER handler: osascript scheitert und die Meldung geht verloren\n'; failed=1; fi
+
+FAKE_FAIL=osascript run_handler 'https://evil.example/switch'
+if [ "$rc" = 2 ] && grep -q '^Claude Statusline: ' "$sb/out"; then printf 'ok     handler (scheitert osascript bei Abweisung, Exit 2)\n'
+else printf 'FEHLER handler: Abweisung bei scheiternder Mitteilung, Exit %s\n' "$rc"; failed=1; fi
 
 # cswap rollt einen abgebrochenen Tausch nicht zurück: kein Timeout, kein kill, kein
 # Hintergrundlauf im Handler. Geprüft wird nur Code, nicht Kommentare; ohne Rumpf ist
@@ -107,6 +139,18 @@ elif printf '%s\n' "$body" | grep -v '^[[:space:]]*#' \
   printf 'FEHLER handler: Timeout, kill oder Hintergrundlauf im Handler\n'; failed=1
 else
   printf 'ok     handler (cswap switch wird nie abgebrochen)\n'
+fi
+
+# Signale an die Prozessgruppe dürfen cswap switch nicht erreichen: das trap steht vor
+# jedem Aufruf von switch, geprüft an der Zeilenfolge des Rumpfs.
+trap_line=$(printf '%s\n' "$body" | grep -n "^[[:space:]]*trap '' HUP INT TERM" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016  # der Text steht wörtlich im Rumpf
+switch_call='"$CSWAP_BIN" switch'
+first_switch=$(printf '%s\n' "$body" | grep -nF "$switch_call" | head -1 | cut -d: -f1)
+if [ -n "$trap_line" ] && [ -n "$first_switch" ] && [ "$trap_line" -lt "$first_switch" ]; then
+  printf 'ok     handler (HUP, INT und TERM ignoriert vor cswap switch)\n'
+else
+  printf 'FEHLER handler: trap fehlt oder steht nach cswap switch\n'; failed=1
 fi
 
 exit "$failed"
