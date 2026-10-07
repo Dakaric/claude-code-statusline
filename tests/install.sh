@@ -364,6 +364,219 @@ check_statusline_is_directory() {
   drop_sandbox
 }
 
+unmanaged_status() {
+  printf '{"schemaVersion":1,"active":{"email":"a@example.com","managed":false}}\n' > "$sb/cswap/status.json"
+}
+
+check_default_is_swap_off() {
+  new_sandbox
+  run_installer
+  if [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "--yes ohne Flag speichert nicht swap=off"
+  elif has_log 'uv ' || has_log 'cswap '; then fail "swap=off ruft trotzdem uv oder cswap"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz swap=off"
+  else ok "Vorgabe ist swap=off"
+  fi
+  drop_sandbox
+}
+
+check_swap_macos() {
+  new_sandbox
+  unmanaged_status
+  local app="$home/Applications/Claude Statusline Switch.app"
+  if ! FAKE_UNAME=Darwin run_installer --swap; then fail "macOS --swap endet mit Fehler"
+  elif ! has_log 'uv tool install claude-swap'; then fail "cswap nicht über uv installiert"
+  elif ! has_log 'cswap add'; then fail "ungemanagtes Konto nicht aufgenommen"
+  elif ! has_log "osacompile -o $app"; then fail "App nicht gebaut"
+  elif ! has_log 'CFBundleURLSchemes:0 string claude-statusline'; then fail "URL-Schema nicht eingetragen"
+  elif ! has_log 'LSUIElement bool true'; then fail "App nicht als Hintergrund-App markiert"
+  elif ! has_log "codesign --force --sign - $app"; then fail "App nicht neu signiert"
+  elif ! has_log "lsregister -f $app"; then fail "App nicht registriert"
+  elif [ "$(awk '/^codesign /{print NR; exit}' "$sb/log")" -le "$(awk '/^PlistBuddy /{n=NR} END{print n+0}' "$sb/log")" ]; then
+    fail "codesign läuft vor der letzten Plist-Änderung, die Signatur wäre ungültig"
+  elif [ "$(awk '/^lsregister -f /{print NR; exit}' "$sb/log")" -le "$(awk '/^codesign /{print NR; exit}' "$sb/log")" ]; then
+    fail "lsregister läuft vor codesign"
+  elif ! grep -q 'on open location' "$app/Contents/source.applescript"; then fail "AppleScript ohne open location"
+  elif ! grep -q '.claude/statusline/switch-handler.sh' "$app/Contents/source.applescript"; then fail "AppleScript ruft den Handler nicht"
+  elif ! grep -qF "CSWAP_BIN=$home/.local/bin/cswap" "$home/.claude/statusline/switch-handler.sh"; then fail "Handler kennt cswap nicht"
+  elif [ ! -x "$home/.claude/statusline/switch-handler.sh" ]; then fail "Handler nicht ausführbar"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker fehlt"
+  elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=on ]; then fail "swap=on nicht gespeichert"
+  else ok "macOS: cswap, App, Registrierung, Marker"
+  fi
+  drop_sandbox
+}
+
+check_swap_linux() {
+  new_sandbox
+  unmanaged_status
+  local desktop="$home/.local/share/applications/claude-statusline-switch.desktop"
+  if ! FAKE_UNAME=Linux run_installer --swap; then fail "Linux --swap endet mit Fehler"
+  elif ! grep -qx 'MimeType=x-scheme-handler/claude-statusline;' "$desktop"; then fail "Desktop-Datei ohne MimeType"
+  elif ! grep -qxF "Exec=\"$home/.claude/statusline/switch-handler.sh\" %u" "$desktop"; then fail "Desktop-Datei ohne Exec"
+  elif ! has_log 'xdg-mime default claude-statusline-switch.desktop x-scheme-handler/claude-statusline'; then fail "xdg-mime nicht gesetzt"
+  elif has_log 'osacompile'; then fail "Linux baut eine macOS-App"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker fehlt"
+  else ok "Linux: Desktop-Datei, xdg-mime, Marker"
+  fi
+  drop_sandbox
+}
+
+check_managed_account_not_readded() {
+  new_sandbox
+  printf '{"schemaVersion":1,"active":{"email":"a@example.com","managed":true}}\n' > "$sb/cswap/status.json"
+  if ! run_installer --swap; then fail "--swap mit gemanagtem Konto endet mit Fehler"
+  elif ! has_log 'cswap status --json'; then fail "Kontostand nie abgefragt"
+  elif has_log 'cswap add'; then fail "gemanagtes Konto erneut aufgenommen"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker fehlt"
+  else ok "gemanagtes Konto bleibt"
+  fi
+  drop_sandbox
+}
+
+check_not_logged_in() {
+  new_sandbox
+  if ! run_installer --swap; then fail "ohne Login endet --swap mit Fehler"
+  elif has_log 'cswap add'; then fail "ohne Login cswap add aufgerufen"
+  elif ! grep -q 'not logged in' "$sb/out"; then fail "keine Anleitung ohne Login"
+  else ok "ohne Login nur Anleitung"
+  fi
+  drop_sandbox
+}
+
+check_swap_off_respected_on_update() {
+  new_sandbox
+  mkdir -p "$home/.claude/statusline"
+  printf 'swap=off\n' > "$home/.claude/statusline/config"
+  if ! run_installer; then fail "Update mit swap=off endet mit Fehler"
+  elif has_log 'uv ' || has_log 'cswap ' || has_log 'xdg-mime'; then fail "Update ignoriert swap=off"
+  elif ! grep -q 'Click-to-switch is off' "$sb/out"; then fail "kein Hinweis auf swap=off"
+  elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "swap=off nicht erhalten"
+  else ok "Update respektiert swap=off"
+  fi
+  drop_sandbox
+}
+
+check_no_swap_removes_handler() {
+  new_sandbox
+  unmanaged_status
+  local desktop="$home/.local/share/applications/claude-statusline-switch.desktop"
+  if ! FAKE_UNAME=Linux run_installer --swap; then fail "Vorbedingung: --swap endet mit Fehler"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ] || [ ! -e "$desktop" ]; then
+    fail "Vorbedingung: --swap legt Marker und Desktop-Datei nicht an"
+  elif ! FAKE_UNAME=Linux run_installer --no-swap; then fail "--no-swap endet mit Fehler"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "--no-swap lässt den Marker stehen"
+  elif [ -e "$home/.claude/statusline/switch-handler.sh" ]; then fail "--no-swap lässt den Handler stehen"
+  elif [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "--no-swap lässt die Desktop-Datei stehen"
+  elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "--no-swap speichert nicht swap=off"
+  else ok "--no-swap baut den Handler ab"
+  fi
+  drop_sandbox
+}
+
+check_update_upgrades_cswap() {
+  new_sandbox
+  unmanaged_status
+  run_installer --swap
+  : > "$sb/log"
+  run_installer
+  if ! has_log 'uv tool upgrade claude-swap'; then fail "Update aktualisiert cswap nicht"
+  elif has_log 'uv tool install claude-swap'; then fail "Update installiert cswap neu"
+  else ok "Update aktualisiert cswap"
+  fi
+  drop_sandbox
+}
+
+check_registration_failure_leaves_no_marker() {
+  new_sandbox
+  unmanaged_status
+  if ! FAKE_UNAME=Darwin FAKE_FAIL=lsregister run_installer --swap; then fail "gescheiterte Registrierung bricht den Installer ab"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheiterter Registrierung"
+  elif ! grep -q 'Click-to-switch is not active' "$sb/out"; then fail "kein Hinweis auf die gescheiterte Registrierung"
+  else ok "gescheiterte Registrierung schreibt keinen Marker"
+  fi
+  drop_sandbox
+}
+
+check_without_uv_or_pipx() {
+  new_sandbox
+  rm -f "$sb/bin/uv"
+  if ! run_installer --swap; then fail "ohne uv und pipx endet --swap mit Fehler"
+  elif has_log 'astral'; then fail "uv-Installer ohne ausdrückliches Ja aufgerufen"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker ohne cswap"
+  elif ! grep -q 'uv or pipx' "$sb/out"; then fail "kein Hinweis auf uv oder pipx"
+  else ok "ohne uv und pipx nur Hinweis"
+  fi
+  drop_sandbox
+}
+
+check_pipx_fallback() {
+  new_sandbox
+  unmanaged_status
+  rm -f "$sb/bin/uv"
+  ln -s "$root/tests/fakes/pipx" "$sb/bin/pipx"
+  run_installer --swap
+  if has_log 'pipx install claude-swap' && [ -e "$home/.claude/statusline/switch-handler" ]; then ok "pipx als Ersatz für uv"
+  else fail "pipx-Weg installiert cswap nicht"
+  fi
+  drop_sandbox
+}
+
+check_switch_url_note() {
+  new_sandbox
+  unmanaged_status
+  mkdir -p "$home/.claude"
+  printf '{"env":{"CLAUDE_STATUSLINE_SWITCH_URL":"http://localhost:7373/x"}}\n' > "$home/.claude/settings.json"
+  run_installer --swap
+  if grep -q 'CLAUDE_STATUSLINE_SWITCH_URL is set' "$sb/out"; then ok "Hinweis auf gesetzte Link-Variable"
+  else fail "kein Hinweis auf CLAUDE_STATUSLINE_SWITCH_URL"
+  fi
+  drop_sandbox
+}
+
+check_swap_off_macos_touches_nothing() {
+  new_sandbox
+  if ! FAKE_UNAME=Darwin run_installer; then fail "macOS ohne Swap endet mit Fehler"
+  elif has_log 'osacompile' || has_log 'PlistBuddy' || has_log 'codesign' || has_log 'lsregister'; then
+    fail "macOS mit swap=off ruft Registrierungswerkzeuge"
+  else ok "macOS mit swap=off rührt nichts an"
+  fi
+  drop_sandbox
+}
+
+check_no_swap_macos_removes_app() {
+  new_sandbox
+  unmanaged_status
+  local app="$home/Applications/Claude Statusline Switch.app"
+  FAKE_UNAME=Darwin run_installer --swap
+  if [ ! -d "$app" ]; then fail "Vorbedingung: --swap baut keine App"
+  elif ! FAKE_UNAME=Darwin run_installer --no-swap; then fail "macOS --no-swap endet mit Fehler"
+  elif ! has_log "lsregister -u $app"; then fail "App nicht bei LaunchServices abgemeldet"
+  elif [ -e "$app" ]; then fail "App bleibt nach --no-swap"
+  else ok "macOS --no-swap entfernt die App"
+  fi
+  drop_sandbox
+}
+
+# Scheitert die Registrierung mittendrin, bleibt nichts Halbfertiges liegen.
+check_partial_registration_cleaned_up() {
+  new_sandbox
+  unmanaged_status
+  FAKE_UNAME=Darwin FAKE_FAIL=codesign run_installer --swap
+  if [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "unsignierte App bleibt liegen"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheiterter Signatur"
+  else ok "gescheiterte Signatur räumt die App weg"
+  fi
+  drop_sandbox
+  new_sandbox
+  unmanaged_status
+  FAKE_UNAME=Linux FAKE_FAIL=xdg-mime run_installer --swap
+  if [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "Desktop-Datei ohne Zuordnung bleibt liegen"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheitertem xdg-mime"
+  else ok "gescheitertes xdg-mime räumt die Desktop-Datei weg"
+  fi
+  drop_sandbox
+}
+
 check_fresh_install
 check_keeps_foreign_keys
 check_absolute_managed_path
@@ -381,5 +594,20 @@ check_jq_missing
 check_home_guard
 check_tmp_dir_readonly
 check_statusline_is_directory
+check_default_is_swap_off
+check_swap_macos
+check_swap_linux
+check_managed_account_not_readded
+check_not_logged_in
+check_swap_off_respected_on_update
+check_no_swap_removes_handler
+check_update_upgrades_cswap
+check_registration_failure_leaves_no_marker
+check_without_uv_or_pipx
+check_pipx_fallback
+check_switch_url_note
+check_swap_off_macos_touches_nothing
+check_no_swap_macos_removes_app
+check_partial_registration_cleaned_up
 check_single_recursive_delete
 exit "$failed"

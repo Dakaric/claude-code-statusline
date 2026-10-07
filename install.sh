@@ -464,6 +464,220 @@ write_switch_handler() {
   fi
 }
 
+# --- cswap ---
+# Bevorzugt uv, sonst pipx. Ein cswap, das auf anderem Weg kam, bleibt unangetastet.
+# Setzt CSWAP_BIN auf den absoluten Pfad oder endet mit 1.
+CSWAP_BIN=""
+
+find_cswap() {
+  local uv_bin=""
+  command -v uv >/dev/null 2>&1 && uv_bin=$(uv tool dir --bin 2>/dev/null)
+  if command -v cswap >/dev/null 2>&1; then
+    CSWAP_BIN=$(command -v cswap)
+  elif [ -n "$uv_bin" ] && [ -x "$uv_bin/cswap" ]; then
+    # uv legt Werkzeuge ab, wo UV_TOOL_BIN_DIR oder XDG_BIN_HOME es sagen.
+    CSWAP_BIN="$uv_bin/cswap"
+  elif [ -x "$HOME/.local/bin/cswap" ]; then
+    CSWAP_BIN="$HOME/.local/bin/cswap"
+  else
+    return 1
+  fi
+}
+
+install_cswap() {
+  if command -v uv >/dev/null 2>&1; then
+    if uv tool list 2>/dev/null | grep -q '^claude-swap '; then
+      uv tool upgrade claude-swap || warn "could not update cswap, keeping the installed version"
+    elif ! find_cswap; then
+      uv tool install claude-swap || return 1
+    fi
+  elif command -v pipx >/dev/null 2>&1; then
+    if pipx list --short 2>/dev/null | grep -q '^claude-swap '; then
+      pipx upgrade claude-swap || warn "could not update cswap, keeping the installed version"
+    elif ! find_cswap; then
+      pipx install claude-swap || return 1
+    fi
+  elif ! find_cswap; then
+    info "cswap is installed with uv or pipx, and neither was found."
+    ask_yes_no "Install uv with the official installer from astral.sh?" n || return 1
+    curl -LsSf https://astral.sh/uv/install.sh | sh || return 1
+    "$HOME/.local/bin/uv" tool install claude-swap || return 1
+  fi
+  find_cswap
+}
+
+# Nimmt das angemeldete Konto in cswap auf, wenn es dort noch fehlt.
+adopt_current_account() {
+  local status email managed
+  status=$("$CSWAP_BIN" status --json 2>/dev/null) || status=""
+  if [ -z "$status" ]; then
+    warn "could not read the account status from cswap. Add the account yourself with: cswap add"
+    return 0
+  fi
+  email=$(printf '%s' "$status" | jq -r '.active.email // ""' 2>/dev/null)
+  managed=$(printf '%s' "$status" | jq -r '.active.managed // false' 2>/dev/null)
+  if [ -z "$email" ]; then
+    info "Claude Code is not logged in. Log in, then add the account with: cswap add"
+    return 0
+  fi
+  [ "$managed" = true ] && return 0
+  "$CSWAP_BIN" add < /dev/null || warn "cswap add failed. Add the account yourself with: cswap add"
+}
+
+# --- Registrierung des Handlers ---
+applescript_source() {
+  cat <<'APPLESCRIPT'
+on open location this_url
+	set handler_path to (POSIX path of (path to home folder)) & ".claude/statusline/switch-handler.sh"
+	try
+		do shell script "/bin/bash " & quoted form of handler_path & " " & quoted form of this_url
+	end try
+end open location
+
+on run
+end run
+APPLESCRIPT
+}
+
+# plist_put PLIST SCHLÜSSEL TYP WERT: setzt einen Schlüssel neu, egal ob er schon da war.
+plist_put() {
+  PlistBuddy -c "Delete :$2" "$1" >/dev/null 2>&1
+  PlistBuddy -c "Add :$2 $3 $4" "$1"
+}
+
+register_macos_app() {
+  local script="$TMP_DIR/switch.applescript" plist="$APP_PATH/Contents/Info.plist"
+  applescript_source > "$script" || return 1
+  mkdir -p "$HOME/Applications" || return 1
+  safe_remove_tree "$APP_PATH"
+  osacompile -o "$APP_PATH" "$script" || return 1
+  plist_put "$plist" CFBundleIdentifier string "$BUNDLE_ID" || return 1
+  plist_put "$plist" LSUIElement bool true || return 1
+  PlistBuddy -c "Delete :CFBundleURLTypes" "$plist" >/dev/null 2>&1
+  PlistBuddy -c "Add :CFBundleURLTypes array" "$plist" \
+    && PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$plist" \
+    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string $BUNDLE_ID" "$plist" \
+    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$plist" \
+    && PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $URL_SCHEME" "$plist" \
+    || return 1
+  # Die geänderte Info.plist bricht die Signatur von osacompile. Neu ad hoc signieren,
+  # sonst startet macOS die App auf Apple Silicon nicht.
+  codesign --force --sign - "$APP_PATH" || return 1
+  lsregister -f "$APP_PATH"
+}
+
+# Desktop-Einträge zitieren Exec nach eigenen Regeln. Ein Pfad mit Zeichen, die dort
+# zusätzlich maskiert werden müssten, wird abgewiesen statt halb richtig geschrieben.
+register_linux_desktop() {
+  local dir=${DESKTOP_PATH%/*} tmp="$DESKTOP_PATH.tmp.$$"
+  case "$HANDLER_PATH" in
+    *[\"\`\$\\%]*) warn "the path $HANDLER_PATH cannot be written into a desktop entry"; return 1 ;;
+  esac
+  command -v xdg-mime >/dev/null 2>&1 || { warn "xdg-mime was not found (package xdg-utils)"; return 1; }
+  mkdir -p "$dir" || return 1
+  if ! {
+    printf '[Desktop Entry]\nType=Application\nName=Claude Statusline Switch\n'
+    printf 'Exec="%s" %%u\n' "$HANDLER_PATH"
+    printf 'MimeType=x-scheme-handler/%s;\nNoDisplay=true\nTerminal=false\n' "$URL_SCHEME"
+  } > "$tmp" || ! mv -f "$tmp" "$DESKTOP_PATH"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  xdg-mime default "$DESKTOP_NAME" "x-scheme-handler/$URL_SCHEME" || return 1
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$dir" >/dev/null 2>&1
+  fi
+  return 0
+}
+
+register_url_handler() {
+  case "$OS" in
+    macos) register_macos_app ;;
+    linux) register_linux_desktop ;;
+  esac
+}
+
+# Der Marker kommt zuletzt: erst wenn Handler und Registrierung stehen, zeigt die
+# Statusline den Link. Scheitert die Registrierung, bleibt er weg.
+install_switch_handler() {
+  write_switch_handler "$CSWAP_BIN" "$(command -v jq)"
+  if ! register_url_handler; then
+    # Halbfertiges (unsignierte App, Desktop-Datei ohne Zuordnung) bleibt nicht liegen.
+    remove_switch_handler
+    warn "Click-to-switch is not active: the link handler could not be registered. You can still switch with: cswap switch"
+    return 1
+  fi
+  : > "$MARKER_PATH" || die "cannot write $MARKER_PATH"
+}
+
+# Marker zuerst: ab dann zeigt keine Statusline mehr einen Link auf den Handler.
+remove_switch_handler() {
+  rm -f "$MARKER_PATH" "$HANDLER_PATH"
+  case "$OS" in
+    macos)
+      if [ -e "$APP_PATH" ] || [ -L "$APP_PATH" ]; then
+        # Erst prüfen, dann abmelden: ein Symlink auf eine fremde App darf nicht bei
+        # LaunchServices abgemeldet werden, bevor der Löschwächter ihn abweist.
+        [ -L "$APP_PATH" ] && die "refusing to delete $APP_PATH: it is a symlink"
+        [ -d "$APP_PATH" ] || die "refusing to delete $APP_PATH: not a directory"
+        lsregister -u "$APP_PATH" >/dev/null 2>&1
+        safe_remove_tree "$APP_PATH"
+      fi ;;
+    linux)
+      if [ -e "$DESKTOP_PATH" ]; then
+        rm -f "$DESKTOP_PATH"
+        if command -v update-desktop-database >/dev/null 2>&1; then
+          update-desktop-database "${DESKTOP_PATH%/*}" >/dev/null 2>&1
+        fi
+      fi ;;
+  esac
+  return 0
+}
+
+# Die Link-Variable gewinnt gegen den Handler, aus settings.json wie aus der Shell.
+note_switch_url_override() {
+  local url=""
+  [ -s "$SETTINGS_PATH" ] && url=$(jq -r '.env.CLAUDE_STATUSLINE_SWITCH_URL // empty' "$SETTINGS_PATH" 2>/dev/null)
+  if [ -n "$url" ]; then
+    info "Note: CLAUDE_STATUSLINE_SWITCH_URL is set in settings.json ($url). Clicks go there, not to the handler, until you remove it."
+  elif [ -n "${CLAUDE_STATUSLINE_SWITCH_URL:-}" ]; then
+    info "Note: CLAUDE_STATUSLINE_SWITCH_URL is set in your shell (${CLAUDE_STATUSLINE_SWITCH_URL}). Clicks go there, not to the handler, until you remove it."
+  fi
+  return 0
+}
+
+print_swap_guide() {
+  cat <<'GUIDE'
+
+Click-to-switch is set up.
+  Add another account: run /login in Claude Code (no /logout before it), then: cswap add
+  Switch: Cmd+click (Ctrl+click on most Linux terminals) the "-> B" or the arrows at the
+  end of the limits line. Your terminal needs to support OSC 8 hyperlinks.
+GUIDE
+}
+
+setup_swap() {
+  local swap=$SWAP_FLAG
+  [ -n "$swap" ] || swap=$(config_get swap)
+  if [ -z "$swap" ]; then
+    if ask_yes_no "Do you use more than one Claude account?" n; then swap=on; else swap=off; fi
+  fi
+  config_set swap "$swap"
+  if [ "$swap" = off ]; then
+    remove_switch_handler
+    info "Click-to-switch is off. Turn it on later by running the installer with --swap."
+    return 0
+  fi
+  if ! install_cswap; then
+    warn "cswap could not be installed, so click-to-switch is not set up. Install uv or pipx and run the installer with --swap again."
+    return 0
+  fi
+  adopt_current_account
+  install_switch_handler || return 0
+  note_switch_url_override
+  print_swap_guide
+}
+
 main() {
   require_bash
   parse_args "$@"
@@ -475,6 +689,7 @@ main() {
   make_tmp_dir
   install_statusline
   wire_settings
+  setup_swap
   info "Done. Start a new Claude Code session to see the status line."
 }
 
