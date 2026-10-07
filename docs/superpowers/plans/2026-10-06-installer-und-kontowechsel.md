@@ -983,7 +983,7 @@ check_jq_missing() {
 check_home_guard() {
   local bad before=$failed
   new_sandbox
-  for bad in "" "/" "relativ/pfad" "//" "/tmp/.."; do
+  for bad in "" "/" "relativ/pfad" "//" "/.."; do
     if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" \
         FAKE_RELEASE_DIR="$sb/release" "$BASH" "$root/install.sh" --yes < /dev/null > "$sb/out" 2>&1; then
       fail "HOME='$bad' wird angenommen"
@@ -2353,7 +2353,7 @@ check_guard_direct() {
 check_guard_bad_home_uninstall() {
   local bad before=$failed
   new_sandbox
-  for bad in "" "//" "/tmp/.."; do
+  for bad in "" "//" "/.."; do
     if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_UNAME=Darwin \
         "$BASH" "$root/install.sh" --yes --uninstall < /dev/null > "$sb/out" 2>&1; then
       fail "--uninstall mit HOME='$bad' wird angenommen"
