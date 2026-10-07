@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.6.0"
+VERSION="1.6.1"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -216,7 +216,9 @@ fi
 #
 # others: 5h-Stand der uebrigen Accounts, "free", wenn ihr Fenster durch ist.
 # rest/need: Runway, siehe Segment 5a2. switch_to: Wechselsignal, siehe Segment 5a3.
-# wk_all: Wochenstand samt Restlaufzeit je Account. hist_u/hist_r: der eigene Stand fuer
+# wk_all: Wochenstand samt Restlaufzeit je Account, die fremden Eintraege in \001 und
+# \002 gefasst (Segment 5b blendet sie ab; ohne bekannten eigenen Account bleibt alles
+# unmarkiert). hist_u/hist_r: der eigene Stand fuer
 # die Historie, aus dem Snapshot statt aus dem Payload, dort ist ein veralteter Stand
 # schon aussortiert. my_fh_used/my_fh_reset: das eigene 5h-Fenster laut Snapshot,
 # my_fh_reset leer, wenn der Account nie eines hatte.
@@ -263,7 +265,9 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
       $runway.cum,
       $runway.need,
       ($target.lbl // ""),
-      ($accts | map("\(.lbl) \(.wk_used)% (\((.wk_days * 10 | round) / 10)d)") | join(" ")),
+      ($accts | map((if ($me.uuid == null) or (.uuid == $u) then ["", ""] else ["\u0001", "\u0002"] end) as $mark
+                    | $mark[0] + "\(.lbl) \(.wk_used)% (\((.wk_days * 10 | round) / 10)d)" + $mark[1])
+       | join(" ")),
       (if $me.uuid then ($me.wk_used | round) else "" end),
       (if $me.uuid then $me.wk_reset else "" end),
       (if $me.uuid then ($me.fh_used | round) else "" end),
@@ -673,6 +677,10 @@ if [ -n "$weekly" ]; then
   # Ab zwei Accounts steht hinter jedem Wert die Restlaufzeit seines Fensters. Damit
   # laesst sich das Wechselsignal nachrechnen, statt ihm glauben zu muessen.
   if [ "$acct_n" -ge 2 ]; then
+    # Die Marker aus jq werden zu Abblenden (\001) und zurueck zur Wochenfarbe (\002).
+    # Unter NO_COLOR sind alle drei Teile leer, die Marker verschwinden spurlos.
+    wk_all="${wk_all//$'\001'/${C_SEP}}"
+    wk_all="${wk_all//$'\002'/${RESET}${col}}"
     seg_weekly="${col}wk ${wk_all}${RESET}"
   fi
 fi

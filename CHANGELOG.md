@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.6.1 - YYYY-MM-DD
+
+### Changed
+
+- **The weekly values of your other accounts are dimmed**, the same way the 5-hour values already were, so your own account stands out.
+
 ## 1.6.0 - 2026-10-07
 
 ### Added

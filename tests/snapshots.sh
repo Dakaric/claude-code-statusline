@@ -115,8 +115,36 @@ check_mail_not_given_to_foreign_owner() {
   printf 'ok     snapshots (fremder Besitzer behaelt seine Mail)\n'
 }
 
+# Farbe im wk-Segment: der eigene Wert behaelt die Farbe des Wochenstands, jeder fremde
+# Account ist abgeblendet wie im 5h-Segment. Die Marker, mit denen jq die fremden Eintraege
+# auszeichnet, duerfen nie in der Ausgabe landen. Dieser Lauf ist der einzige ohne NO_COLOR.
+check_wk_dims_foreign_accounts() {
+  local sandbox output dim=$'\033[2;37m' own_color=$'\033[92m'
+  sandbox=$(mktemp -d)
+  HOME="$sandbox" STATUSLINE_NOW="$test_now" \
+    bash "$root/tests/setup/zwei-accounts.sh" "$sandbox" >/dev/null
+  output=$(HOME="$sandbox" STATUSLINE_NOW="$test_now" \
+    env -u NO_COLOR -u ENABLE_PROMPT_CACHING_1H bash "$root/statusline.sh" \
+    < "$root/tests/fixtures/zwei-accounts.json")
+  rm -rf "$sandbox"
+  if [[ "$output" != *"${own_color}wk A 24% (5.2d) "* ]]; then
+    printf 'FEHLER snapshots: eigener wk-Wert hat nicht die Wochenfarbe\n'
+    return 1
+  fi
+  if [[ "$output" != *"${dim}B 78% (0.9d)"* ]]; then
+    printf 'FEHLER snapshots: fremder wk-Wert ist nicht abgeblendet\n'
+    return 1
+  fi
+  if [[ "$output" == *$'\001'* || "$output" == *$'\002'* ]]; then
+    printf 'FEHLER snapshots: Marker-Zeichen in der Ausgabe\n'
+    return 1
+  fi
+  printf 'ok     snapshots (fremde Accounts im wk-Segment abgeblendet)\n'
+}
+
 check_first_seen_survives_unreadable_snapshot || failed=1
 check_stray_files_do_not_block_writes || failed=1
 check_mail_follows_login || failed=1
 check_mail_not_given_to_foreign_owner || failed=1
+check_wk_dims_foreign_accounts || failed=1
 exit "$failed"
