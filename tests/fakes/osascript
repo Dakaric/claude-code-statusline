@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake für osascript: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
+set -u
+printf 'osascript %s\n' "$*" >> "$FAKE_LOG"
+case " ${FAKE_FAIL:-} " in *" osascript "*) exit 1 ;; esac
+exit 0

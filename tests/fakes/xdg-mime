@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake für xdg-mime: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
+set -u
+printf 'xdg-mime %s\n' "$*" >> "$FAKE_LOG"
+case " ${FAKE_FAIL:-} " in *" xdg-mime "*) exit 1 ;; esac
+exit 0

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake für uname: der Test wählt das Betriebssystem, damit beide Zweige auf jedem
+# Rechner laufen.
+printf '%s\n' "${FAKE_UNAME:-Linux}"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake für PlistBuddy: schreibt den Aufruf mit. Steht der Name in FAKE_FAIL, scheitert er.
+set -u
+printf 'PlistBuddy %s\n' "$*" >> "$FAKE_LOG"
+case " ${FAKE_FAIL:-} " in *" PlistBuddy "*) exit 1 ;; esac
+exit 0
