@@ -319,7 +319,7 @@ check_home_guard() {
 # Statischer Wächter: rekursives Löschen gibt es nur an einer Stelle, in safe_remove_tree.
 check_single_recursive_delete() {
   local count others
-  count=$(grep -cE 'rm[[:space:]]+(-[a-zA-Z]*[rR]|--recursive)' "$root/install.sh")
+  count=$(grep -cE 'rm([[:space:]]+-[a-zA-Z]*)*[[:space:]]+(-[a-zA-Z]*[rR]|--recursive)' "$root/install.sh")
   others=$(grep -nE 'find .*-delete|rmtree' "$root/install.sh")
   if [ "$count" != 1 ] || [ -n "$others" ]; then
     printf 'FEHLER install rekursives Löschen an %s Stellen\n%s\n' "$count" "$others"
@@ -341,10 +341,8 @@ check_tmp_dir_readonly() {
 . "$sb/lib.sh"
 init_paths
 make_tmp_dir
-( TMP_DIR="$sb/other" ) 2>/dev/null
-rc=\$?
-[ "\$rc" != 0 ] || ( safe_remove_tree "$sb/other" ) 2>/dev/null
-exit "\$rc"
+( TMP_DIR="$sb/other"; safe_remove_tree "$sb/other" ) 2>/dev/null
+exit "\$?"
 PROBE
   if env -i HOME="$home" TMPDIR="$sb/tmp" PATH="$sb/bin" "$BASH" "$sb/probe.sh" > "$sb/out" 2>&1; then fail "TMP_DIR lässt sich nach make_tmp_dir neu zuweisen"
   elif [ ! -e "$sb/other/sentinel" ]; then fail "fremder Ordner wurde gelöscht"
