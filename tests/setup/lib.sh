@@ -6,14 +6,17 @@ ACCT_A="aaaaaaaa-0000-0000-0000-000000000001"
 ACCT_B="bbbbbbbb-0000-0000-0000-000000000002"
 
 # Schreibt den Snapshot eines Accounts, wie ihn die Statusline selbst ablegt.
-# Argumente: sandbox uuid first_seen captured_at wk_used wk_reset fh_used fh_reset
+# Argumente: sandbox uuid first_seen captured_at wk_used wk_reset fh_used fh_reset [mail]
 write_snapshot() {
   local sandbox=$1 uuid=$2 seen=$3 captured=$4
-  local wk_used=$5 wk_reset=$6 fh_used=$7 fh_reset=$8
+  local wk_used=$5 wk_reset=$6 fh_used=$7 fh_reset=$8 mail=${9:-}
+  local mail_field=""
+  [ -n "$mail" ] && mail_field="\"email\": \"$mail\","
   mkdir -p "$sandbox/.claude/statusline-accounts"
   cat > "$sandbox/.claude/statusline-accounts/${uuid}.json" <<JSON
 {
   "uuid": "$uuid",
+  $mail_field
   "first_seen": $seen,
   "captured_at": $captured,
   "rate_limits": {
@@ -27,16 +30,26 @@ JSON
 # Legt das Sandbox-HOME an: aaa ist der aktive Account und steht in claude.json, bbb ist
 # der zweite, dessen Stand nur als Snapshot vorliegt. aaa bekommt bewusst keinen
 # Snapshot, der entsteht erst im Lauf mit first_seen = now; bbbs first_seen liegt eine
-# Sekunde spaeter, damit aaa Label A behaelt.
-# Argumente: sandbox now wk_used wk_reset_offset fh_used fh_reset_offset (Offsets zu now)
+# Sekunde spaeter, damit aaa Label A behaelt. Die Mails sind optional: ohne sie sieht
+# alles aus wie vor 1.6.0.
+# Argumente: sandbox now wk_used wk_reset_offset fh_used fh_reset_offset [mail_a] [mail_b]
 setup_accounts() {
   local sandbox=$1 now=$2 wk_used=$3 wk_off=$4 fh_used=$5 fh_off=$6
+  local mail_a=${7:-} mail_b=${8:-} mail_field=""
+  [ -n "$mail_a" ] && mail_field=", \"emailAddress\": \"$mail_a\""
   mkdir -p "$sandbox/.claude/statusline-accounts"
   cat > "$sandbox/.claude.json" <<JSON
-{ "oauthAccount": { "accountUuid": "$ACCT_A" } }
+{ "oauthAccount": { "accountUuid": "$ACCT_A"$mail_field } }
 JSON
   write_snapshot "$sandbox" "$ACCT_B" "$((now + 1))" "$((now - 7200))" \
-    "$wk_used" "$((now + wk_off))" "$fh_used" "$((now + fh_off))"
+    "$wk_used" "$((now + wk_off))" "$fh_used" "$((now + fh_off))" "$mail_b"
+}
+
+# Legt die Marker-Datei an, die install.sh nach erfolgreicher Handler-Registrierung
+# schreibt. Ihre Existenz schaltet den Link auf claude-statusline://switch frei.
+mark_switch_handler() {
+  mkdir -p "$1/.claude/statusline"
+  : > "$1/.claude/statusline/switch-handler"
 }
 
 # Schreibt die Historie des aktiven Accounts, alle Punkte im selben Wochenfenster. Nach

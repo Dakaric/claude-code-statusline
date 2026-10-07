@@ -110,7 +110,8 @@ fi
 # der neue Stand den Snapshot, statt mit ihm gemischt oder verworfen zu werden.
 #
 # Derselbe Lauf liefert first_seen und die bisherigen Limits des Besitzers, dazu ob der
-# Snapshot des Logins gelesen wurde.
+# Snapshot des Logins gelesen wurde, die Mail des Logins aus ~/.claude.json und die
+# bisher gespeicherte Mail des Besitzers.
 acct_dir="$HOME/.claude/statusline-accounts"
 
 # Liest die Snapshots Datei fuer Datei. Eine leere, kaputte oder unlesbare Datei faellt
@@ -123,8 +124,10 @@ SNAPSHOTS_JQ='def snapshots:
 
 snapshot_files=("$acct_dir"/*.json)
 IFS="$FIELD_SEP" read -r login_read login_uuid acct_owner acct_replace first_seen old_limits \
+  login_mail owner_mail \
   <<< "$(jq -n -R -r --slurpfile claude "$HOME/.claude.json" --arg r "$weekly_reset" \
     --argjson now "$NOW" "$SNAPSHOTS_JQ"'
+  def oneline: tostring | gsub("[\n\u001f]"; " ");
   ($claude[0].oauthAccount.accountUuid // "") as $login
   | snapshots as $all
   | ($all | map(select(.uuid == $login)) | first | .rate_limits.seven_day.resets_at // 0) as $known
@@ -140,7 +143,9 @@ IFS="$FIELD_SEP" read -r login_read login_uuid acct_owner acct_replace first_see
      end) as [$owner, $replace]
   | ($all | map(select(.uuid == $owner)) | first) as $snapshot
   | [any($all[]; .uuid == $login), $login, $owner, $replace, ($snapshot.first_seen // ""),
-     ($snapshot.rate_limits // {} | tojson)]
+     ($snapshot.rate_limits // {} | tojson),
+     ($claude[0].oauthAccount.emailAddress // "" | oneline),
+     ($snapshot.email // "" | oneline)]
   | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 [ "$acct_owner" = "-" ] && acct_owner=""
 acct_uuid="${acct_owner:-$login_uuid}"
@@ -176,18 +181,24 @@ if [ -n "$acct_owner" ] && [ -n "${five_h}${weekly}" ] \
   # Pro Fenster gewinnt der spaetere Reset, bei gleichem Reset der hoehere Verbrauch:
   # innerhalb eines Fensters sinkt der Stand nie, ein niedrigerer stammt also aus einer
   # Session, deren letzte Antwort aelter ist als der Snapshot.
+  # Die Mail nennt der Klick-Handler cswap als Ziel. ~/.claude.json kennt nur die des
+  # Logins, also bekommt nur dessen Snapshot sie. Gehoert der Stand einem anderen Account
+  # (eine Session von vor dem Umloggen), bleibt dessen bisherige Mail stehen.
+  acct_mail="$owner_mail"
+  [ "$acct_uuid" = "$login_uuid" ] && [ -n "$login_mail" ] && acct_mail="$login_mail"
   acct_tmp="${acct_file}.tmp.$$"
   { [ "$acct_replace" = 1 ] || [ -z "$old_limits" ]; } && old_limits="{}"
   if echo "$input" | jq -c \
     --arg uuid "$acct_uuid" --argjson now "$NOW" --argjson seen "$first_seen" \
-    --argjson old "$old_limits" '
+    --argjson old "$old_limits" --arg mail "$acct_mail" '
     def later(a; b):
       if a == null then b elif b == null then a
       else [a, b] | max_by([.resets_at // 0, .used_percentage // 0]) end;
     (.rate_limits // {}) as $new
     | {uuid: $uuid, first_seen: $seen, captured_at: $now,
        rate_limits: (reduce (($old + $new) | keys[]) as $k
-         ({}; .[$k] = later($old[$k]; $new[$k])))}' \
+         ({}; .[$k] = later($old[$k]; $new[$k])))}
+      + (if $mail == "" then {} else {email: $mail} end)' \
     > "$acct_tmp" 2>/dev/null; then
     mv -f "$acct_tmp" "$acct_file"
     acct_tmp=""
@@ -209,9 +220,14 @@ fi
 # die Historie, aus dem Snapshot statt aus dem Payload, dort ist ein veralteter Stand
 # schon aussortiert. my_fh_used/my_fh_reset: das eigene 5h-Fenster laut Snapshot,
 # my_fh_reset leer, wenn der Account nie eines hatte.
+# switch_mail: die Mail des Wechselziels, schon fuer eine URL kodiert (@uri macht aus
+# "@" "%40" und laesst nur Buchstaben, Ziffern und -_.~ stehen), leer ohne Ziel oder
+# ohne bekannte Mail. Eine Mail mit Zeichen, die der Klick-Handler nicht annimmt (er
+# erlaubt dieselbe Menge), bleibt ebenfalls leer: dann verlinkt "-> X" auf die
+# Rotation statt auf ein Ziel, das der Handler abweisen wuerde.
 snapshot_files=("$acct_dir"/*.json)
 IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_u hist_r \
-  my_fh_used my_fh_reset \
+  my_fh_used my_fh_reset switch_mail \
   <<< "$(jq -n -R -r --arg u "$acct_uuid" --argjson now "$NOW" "$SNAPSHOTS_JQ"'
   def letter: ("ABCDEFGH" | split(""))[.];
   def window_open(w): (w.resets_at // 0) > $now;
@@ -233,24 +249,27 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
      | reduce .[] as $a ({cum: 0, need: 0};
          .cum += (100 - $a.wk_used)
          | .need = ([.need, .cum / $a.wk_days] | max))) as $runway
+  | ($others
+     | map((if .fh_reset <= $now then 0 else .fh_used end) as $fh
+           | select($fh < 95)
+           | ((100 - .wk_used) / .wk_days) as $decay
+           | select($me_done or ($decay > $me_decay))
+           | {lbl, email, decay: $decay})
+     | sort_by(-.decay) | first) as $target
   | [ ($accts | length),
       ($me.lbl // ""),
       ($others | map("\(.lbl) " + (if .fh_reset <= $now then "free" else "\(.fh_used)%" end))
        | join(" ")),
       $runway.cum,
       $runway.need,
-      ($others
-       | map((if .fh_reset <= $now then 0 else .fh_used end) as $fh
-             | select($fh < 95)
-             | ((100 - .wk_used) / .wk_days) as $decay
-             | select($me_done or ($decay > $me_decay))
-             | {lbl, decay: $decay})
-       | sort_by(-.decay) | first | .lbl // ""),
+      ($target.lbl // ""),
       ($accts | map("\(.lbl) \(.wk_used)% (\((.wk_days * 10 | round) / 10)d)") | join(" ")),
       (if $me.uuid then ($me.wk_used | round) else "" end),
       (if $me.uuid then $me.wk_reset else "" end),
       (if $me.uuid then ($me.fh_used | round) else "" end),
-      ($me.rate_limits.five_hour.resets_at | numbers) // ""
+      ($me.rate_limits.five_hour.resets_at | numbers) // "",
+      ($target.email // "" | tostring
+       | if test("^[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+$") then @uri else "" end)
     ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 acct_n="${acct_n:-0}"
 
@@ -430,26 +449,28 @@ if [ -n "${NO_COLOR:-}" ]; then
 fi
 
 # --- Optionaler Klick-Link (OSC 8) ---
-# Mit CLAUDE_STATUSLINE_SWITCH_URL bekommt die Limit-Zeile einen Cmd+Klick-Link,
-# etwa auf eine Seite zum Kontowechsel. Ohne Variable bleibt die Ausgabe
-# unveraendert. Erlaubt sind nur URLs mit Schema und ohne Leerraum,
-# Steuerzeichen und Backslash: die Zeile geht durch printf %b, ein Backslash in
-# der URL wuerde dort zur Steuersequenz. NO_COLOR laesst den Link stehen, er ist
-# keine Farbe.
+# Die Limit-Zeile bekommt einen Cmd+Klick-Link zum Kontowechsel. Das Ziel, in dieser
+# Reihenfolge: CLAUDE_STATUSLINE_SWITCH_URL, wenn gesetzt und gueltig, etwa ein eigenes
+# Cockpit. Sonst das eigene Schema claude-statusline://switch, aber nur, wenn install.sh
+# den Klick-Handler eingerichtet hat: das verraet die Marker-Datei, geprueft mit [ -e ]
+# ohne eigenen Prozess. Ohne beides gibt es keinen Link, ein Link ohne Handler waere tot.
+# Erlaubt sind nur URLs mit Schema und ohne Leerraum, Steuerzeichen und Backslash: die
+# Zeile geht durch printf %b, ein Backslash in der URL wuerde dort zur Steuersequenz.
+# NO_COLOR laesst den Link stehen, er ist keine Farbe.
 switch_url=""
+switch_by_handler=0
 url_re='^[A-Za-z][A-Za-z0-9+.-]*://[^[:space:][:cntrl:]\]+$'
 if [[ "${CLAUDE_STATUSLINE_SWITCH_URL:-}" =~ $url_re ]]; then
   switch_url="$CLAUDE_STATUSLINE_SWITCH_URL"
+elif [ -e "$HOME/.claude/statusline/switch-handler" ]; then
+  switch_url="claude-statusline://switch"
+  switch_by_handler=1
 fi
 
-# link_wrap VAR TEXT: VAR wird TEXT, bei gesetzter switch_url als OSC-8-Link.
+# link_wrap VAR URL TEXT: VAR wird TEXT als OSC-8-Link auf URL.
 # printf -v statt nameref, damit bash 3.2 (macOS) mitlaeuft.
 link_wrap() {
-  if [ -n "$switch_url" ]; then
-    printf -v "$1" '%s' "\033]8;;${switch_url}\033\\\\${2}\033]8;;\033\\\\"
-  else
-    printf -v "$1" '%s' "$2"
-  fi
+  printf -v "$1" '%s' "\033]8;;${2}\033\\\\${3}\033]8;;\033\\\\"
 }
 
 # Die Hilfsfunktionen schreiben ihr Ergebnis in die Variable, deren Namen sie als erstes
@@ -767,16 +788,22 @@ join_segs() {
 }
 
 # --- Segment 5a4: Klick-Link zum Kontowechsel (ergaenzt seg_switch aus 5a3) ---
-# Zeigt die Zeile das Wechselsignal, ist es selbst der Link. Sonst steht am Ende
-# ein eigenes Zeichen, aber nur in einer Zeile, die ohnehin Limits zeigt: allein
-# wuerde es eine Zeile nur fuer sich aufmachen.
+# Zeigt die Zeile das Wechselsignal, ist es selbst der Link. Ueber den Handler traegt er
+# dann die Mail des Ziels, damit der Klick genau dorthin wechselt; ohne bekannte Mail
+# bleibt die Rotation. Sonst steht am Ende ein eigenes Zeichen fuer die Rotation, aber
+# nur in einer Zeile, die ohnehin Limits zeigt: allein wuerde es eine Zeile nur fuer sich
+# aufmachen.
 switch_link=""
 if [ -n "$switch_url" ]; then
   if [ -n "$seg_switch" ]; then
-    link_wrap switch_link "-> ${switch_to}"
+    target_url="$switch_url"
+    if [ "$switch_by_handler" = 1 ] && [ -n "$switch_mail" ]; then
+      target_url="${switch_url}?to=${switch_mail}"
+    fi
+    link_wrap switch_link "$target_url" "-> ${switch_to}"
     seg_switch="${C_WARN}${switch_link}${RESET}"
   elif [ -n "${seg_rate}${seg_weekly}${seg_weekly_opus}${seg_daily}" ]; then
-    link_wrap switch_link "⇄"
+    link_wrap switch_link "$switch_url" "⇄"
     seg_switch="${C_SEP}${switch_link}${RESET}"
   fi
 fi

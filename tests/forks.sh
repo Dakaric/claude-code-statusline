@@ -30,11 +30,14 @@ done
 
 HOME="$sandbox" STATUSLINE_NOW="$test_now" \
   bash "$root/tests/setup/runway-knapp.sh" "$sandbox" >/dev/null
+# Mit Marker laeuft auch der Link-Zweig mit. Er darf keinen Prozess kosten.
+mkdir -p "$sandbox/.claude/statusline"
+: > "$sandbox/.claude/statusline/switch-handler"
 : > "$sandbox/calls"
 : > "$sandbox/depths"
 # shellcheck disable=SC2016  # $1 und $2 gehoeren der inneren bash, nicht dieser
 HOME="$sandbox" PATH="$sandbox/bin:$PATH" NO_COLOR=1 STATUSLINE_NOW="$test_now" \
-  env -u ENABLE_PROMPT_CACHING_1H bash -c '
+  env -u ENABLE_PROMPT_CACHING_1H -u CLAUDE_STATUSLINE_SWITCH_URL bash -c '
     set -T
     trap "echo \$BASH_SUBSHELL >> \"$1/depths\"" DEBUG
     . "$2"' _ "$sandbox" "$root/statusline.sh" \
