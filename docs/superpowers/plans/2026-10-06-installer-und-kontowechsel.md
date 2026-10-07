@@ -55,7 +55,7 @@ Diese Namen benutzen mehrere Aufgaben. Sie stehen hier einmal und gelten überal
 | `uname` | gibt `${FAKE_UNAME:-Linux}` aus |
 | `uv` | `tool list` listet `claude-swap v0.26.0`, wenn `$HOME/.local/bin/cswap` existiert; `tool install claude-swap` kopiert `$FAKE_DIR/cswap` dorthin; `tool upgrade claude-swap` Exit 0 |
 | `pipx` | `list --short` wie oben mit `claude-swap 0.26.0`; `install claude-swap` wie uv; `upgrade claude-swap` Exit 0 |
-| `cswap` | `status`/`list`/`switch` geben `$FAKE_CSWAP_DIR/{status,list,switch}.json` aus (Vorgaben unten), `switch` endet mit dem Exit aus `switch.exit` (Vorgabe 0), `add` Exit 0 |
+| `cswap` | `status`/`list`/`switch` geben `$FAKE_CSWAP_DIR/{status,list,switch}.json` aus (ohne Datei: kein Login, keine Konten), `list` und `switch` enden mit dem Exit aus `list.exit` bzw. `switch.exit` (Vorgabe 0), `add` Exit 0 |
 | `osacompile` | `-o APP SKRIPT`: legt `APP/Contents/Info.plist` an und kopiert SKRIPT nach `APP/Contents/source.applescript` |
 | `PlistBuddy`, `codesign`, `lsregister`, `xdg-mime`, `update-desktop-database`, `osascript`, `notify-send` | nur mitschreiben, Exit 0; steht der Name in `$FAKE_FAIL`, Exit 1 |
 
@@ -236,32 +236,35 @@ check_mail_follows_login() {
 }
 
 # Eingeloggt ist A, der Payload gehoert noch B (wie fremder-payload). Bs Snapshot wird
-# in diesem Lauf geschrieben, darf aber nicht As Mail bekommen: sonst wechselte der Klick
-# auf "-> B" zu A.
+# in diesem Lauf geschrieben. Er darf nicht As Mail bekommen und muss seine eigene
+# behalten: sonst wechselte der Klick auf "-> B" zu A, oder er fiele nach jedem
+# Kontowechsel still auf die Rotation zurueck.
+# Die Variable heisst bewusst nicht sandbox: lib.sh nutzt "local sandbox", im
+# Subshell-Source meldet shellcheck sonst SC2031.
 check_mail_not_given_to_foreign_owner() {
-  local sandbox accounts mail_b captured_b
-  sandbox=$(mktemp -d)
-  accounts="$sandbox/.claude/statusline-accounts"
+  local home accounts mail_b captured_b
+  home=$(mktemp -d)
+  accounts="$home/.claude/statusline-accounts"
   (
     # shellcheck source=tests/setup/lib.sh
     . "$root/tests/setup/lib.sh"
-    setup_accounts "$sandbox" "$test_now" 5 501120 1 7200 a@example.com
-    write_snapshot "$sandbox" "$ACCT_A" "$((test_now - 100))" "$((test_now - 600))" \
+    setup_accounts "$home" "$test_now" 5 501120 1 7200 a@example.com b@example.com
+    write_snapshot "$home" "$ACCT_A" "$((test_now - 100))" "$((test_now - 600))" \
       43 "$((test_now + 293760))" 10 "$((test_now + 3600))" a@example.com
   )
-  run_statusline "$sandbox" fremder-payload
+  run_statusline "$home" fremder-payload
   mail_b=$(jq -r '.email // ""' "$accounts/$acct_b.json")
   captured_b=$(jq -r '.captured_at' "$accounts/$acct_b.json")
-  rm -rf "$sandbox"
+  rm -rf "$home"
   if [ "$captured_b" != "$test_now" ]; then
     printf 'FEHLER snapshots: Bs Snapshot wurde nicht geschrieben, der Fall prueft nichts\n'
     return 1
   fi
-  if [ -n "$mail_b" ]; then
-    printf 'FEHLER snapshots: B bekam die Mail %s des Logins\n' "$mail_b"
+  if [ "$mail_b" != b@example.com ]; then
+    printf 'FEHLER snapshots: B hat die Mail %s, erwartet seine eigene b@example.com\n' "$mail_b"
     return 1
   fi
-  printf 'ok     snapshots (fremder Besitzer bekommt nicht die Mail des Logins)\n'
+  printf 'ok     snapshots (fremder Besitzer behaelt seine Mail)\n'
 }
 ```
 
@@ -275,7 +278,7 @@ check_mail_not_given_to_foreign_owner || failed=1
 - [ ] **Step 4: Tests laufen lassen, sie müssen scheitern**
 
 Run: `bash /Users/chris/Sites/claude-code-statusline/tests/snapshots.sh`
-Expected: `FEHLER snapshots: Mails A= B=b@example.com …` (A bekommt noch keine Mail). Der zweite neue Check meldet `ok`, weil heute niemand eine Mail schreibt; das ist richtig so, er schützt gegen die Implementierung.
+Expected: beide neuen Checks melden FEHLER: `FEHLER snapshots: Mails A= B=b@example.com …` (A bekommt noch keine Mail) und `FEHLER snapshots: B hat die Mail , erwartet seine eigene b@example.com` (das heutige Schreiben wirft Bs Mail weg).
 
 Run: `bash /Users/chris/Sites/claude-code-statusline/tests/run.sh`
 Expected: fünf Zeilen `FEHLT  link-…` (noch keine Erwartung hinterlegt).
@@ -383,7 +386,8 @@ Im jq-Programm das Ziel einmal als `$target` berechnen, statt nur sein Label im 
       (if $me.uuid then $me.wk_reset else "" end),
       (if $me.uuid then ($me.fh_used | round) else "" end),
       ($me.rate_limits.five_hour.resets_at | numbers) // "",
-      ($target.email // "" | tostring | @uri)
+      ($target.email // "" | tostring
+       | if test("^[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+$") then @uri else "" end)
     ] | map(tostring) | join("\u001f")' "${snapshot_files[@]}" < /dev/null 2>/dev/null)"
 ```
 
@@ -392,7 +396,9 @@ Im Kommentarblock über dem Lauf (Zeilen 206–211) ergänzen:
 ```bash
 # switch_mail: die Mail des Wechselziels, schon fuer eine URL kodiert (@uri macht aus
 # "@" "%40" und laesst nur Buchstaben, Ziffern und -_.~ stehen), leer ohne Ziel oder
-# ohne bekannte Mail.
+# ohne bekannte Mail. Eine Mail mit Zeichen, die der Klick-Handler nicht annimmt (er
+# erlaubt dieselbe Menge), bleibt ebenfalls leer: dann verlinkt "-> X" auf die
+# Rotation statt auf ein Ziel, das der Handler abweisen wuerde.
 ```
 
 - [ ] **Step 8: Link-Ziel über Marker, `link_wrap` mit expliziter URL**
@@ -462,7 +468,7 @@ Dann die letzte Zeile jeder neuen Datei mit `cat -v` lesen und vergleichen:
 
 ```bash
 for n in link-handler-ziel link-handler-rotation link-handler-ohne-mail; do
-  tail -1 "/Users/chris/Sites/claude-code-statusline/tests/expected/$n.txt" | cat -v; echo
+  tail -1 "/Users/chris/Sites/claude-code-statusline/tests/expected/$n.txt" | LC_ALL=C cat -v; echo
 done
 cmp /Users/chris/Sites/claude-code-statusline/tests/expected/link-ohne-handler.txt \
     /Users/chris/Sites/claude-code-statusline/tests/expected/zwei-accounts.txt && echo gleich-zwei-accounts
@@ -528,7 +534,7 @@ git -C /Users/chris/Sites/claude-code-statusline commit -m "feat(statusline): Ma
 
 **Interfaces:**
 - Consumes: nichts.
-- Produces (Funktionen in `install.sh`, von Task 3–5 benutzt): `die MSG`, `info MSG`, `warn MSG`, `ask_yes_no FRAGE y|n`, `config_get KEY`, `config_set KEY VALUE`, `safe_remove_tree PFAD`, `write_settings JQ_FILTER [JQ_ARGS…]`, `current_statusline_command`, `points_to_this_statusline BEFEHL`; Globale `OS` (`macos|linux`), `TMP_DIR`, `ASSUME_YES`, `SWAP_FLAG` (`on|off|""`), `UNINSTALL`, `CLAUDE_DIR`, `STATUSLINE_PATH`, `SETTINGS_PATH`, `STATE_DIR`, `CONFIG_PATH`, `HANDLER_PATH`, `MARKER_PATH`, `APP_PATH`, `DESKTOP_PATH`, `APP_NAME`, `URL_SCHEME`, `DESKTOP_NAME`, `STATUSLINE_COMMAND`, `MACOS_TOOL_DIRS`.
+- Produces (Funktionen in `install.sh`, von Task 3–5 benutzt): `die MSG`, `info MSG`, `warn MSG`, `ask_yes_no FRAGE y|n`, `config_get KEY`, `config_set KEY VALUE`, `safe_remove_tree PFAD`, `write_settings JQ_FILTER [JQ_ARGS…]`, `current_statusline_command`, `command_path BEFEHL`, `points_to_this_statusline BEFEHL`, `is_managed_command BEFEHL`; Globale `OS` (`macos|linux`), `TMP_DIR`, `ASSUME_YES`, `SWAP_FLAG` (`on|off|""`), `UNINSTALL`, `CLAUDE_DIR`, `STATUSLINE_PATH`, `SETTINGS_PATH`, `STATE_DIR`, `CONFIG_PATH`, `HANDLER_PATH`, `MARKER_PATH`, `APP_PATH`, `DESKTOP_PATH`, `APP_NAME`, `URL_SCHEME`, `DESKTOP_NAME`, `BUNDLE_ID`, `STATUSLINE_COMMAND`, `MACOS_TOOL_DIRS`.
 - Produces (Test-Harness in `tests/install.sh`, von Task 4–5 erweitert): `new_sandbox`, `run_installer ARGS…` (hängt immer `--yes` an), `has_log MUSTER`, `fail TEXT`, `ok TEXT`, Globale `sb`, `home`, `failed`.
 
 - [ ] **Step 1: Fakes anlegen**
@@ -576,6 +582,8 @@ case "$*" in
     mkdir -p "$HOME/.local/bin" && cp "$FAKE_DIR/cswap" "$HOME/.local/bin/cswap" ;;
   "tool upgrade claude-swap")
     exit 0 ;;
+  "tool dir --bin")
+    printf '%s\n' "$HOME/.local/bin" ;;
   *)
     exit 2 ;;
 esac
@@ -614,7 +622,8 @@ case "${1:-}" in
   status)
     cat "$state/status.json" 2>/dev/null || printf '{"schemaVersion":1,"active":null}\n' ;;
   list)
-    cat "$state/list.json" 2>/dev/null || printf '{"schemaVersion":1,"accounts":[]}\n' ;;
+    cat "$state/list.json" 2>/dev/null || printf '{"schemaVersion":1,"accounts":[]}\n'
+    exit "$(cat "$state/list.exit" 2>/dev/null || echo 0)" ;;
   switch)
     cat "$state/switch.json" 2>/dev/null
     exit "$(cat "$state/switch.exit" 2>/dev/null || echo 0)" ;;
@@ -685,9 +694,19 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 failed=0
 sb=""
 home=""
+# Alle Sandboxen dieses Laufs liegen unter einem Ordner. drop_sandbox löscht nur dort.
+run_root=$(mktemp -d)
+trap 'rm -rf -- "$run_root"' EXIT
 
-real_tools="bash env cat cp mv rm mkdir chmod grep awk sed date mktemp rmdir dirname jq sha256sum shasum"
+# rm kann auf dem Entwicklerrechner ein Löschwächter sein, der seinen Ort mit readlink -f
+# und dirname auflöst; deshalb gehören beide in die Sandbox. Nicht auf /bin/rm umbiegen,
+# das umginge den Wächter. Die Probe am Ende von new_sandbox meldet, wenn rm dort nicht
+# löscht, statt dass Löschwächter-Tests aus dem falschen Grund grün werden.
+real_tools="bash env cat cp mv rm mkdir chmod grep awk sed date mktemp rmdir dirname readlink cmp jq sha256sum shasum"
 fake_tools="curl uname uv osacompile PlistBuddy codesign lsregister xdg-mime update-desktop-database osascript notify-send"
+# Der statusLine-Befehl, den der Installer schreibt. Die Tilde ist Text, kein Pfad.
+# shellcheck disable=SC2088
+managed_command="~/.claude/statusline.sh"
 
 sha256_line() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
@@ -695,7 +714,7 @@ sha256_line() {
 
 new_sandbox() {
   local tool real
-  sb=$(mktemp -d)
+  sb=$(mktemp -d "$run_root/sb.XXXXXX")
   home="$sb/home"
   mkdir -p "$home" "$sb/bin" "$sb/tmp" "$sb/release" "$sb/cswap"
   for tool in $real_tools; do
@@ -707,9 +726,29 @@ new_sandbox() {
   cp "$root/statusline.sh" "$sb/release/statusline.sh"
   (cd "$sb/release" && sha256_line statusline.sh > SHA256SUMS)
   : > "$sb/log"
+  : > "$sb/probe"
+  env -i PATH="$sb/bin" rm -f "$sb/probe" 2>/dev/null
+  if [ -e "$sb/probe" ]; then
+    printf 'FEHLER install: rm löscht in der Sandbox nicht, Tests wären nicht aussagekräftig\n'
+    exit 1
+  fi
 }
 
-drop_sandbox() { rm -rf "$sb"; }
+drop_sandbox() {
+  case "$sb" in
+    "$run_root"/sb.*) rm -rf -- "$sb" ;;
+    *) printf 'drop_sandbox verweigert: %s\n' "$sb" >&2; exit 1 ;;
+  esac
+}
+
+# Zählt die Sicherungen von settings.json, ohne ls | grep.
+count_backups() {
+  local file count=0
+  for file in "$home/.claude"/settings.json.bak-*; do
+    [ -e "$file" ] && count=$((count + 1))
+  done
+  printf '%s' "$count"
+}
 
 run_installer() {
   env -i HOME="$home" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" \
@@ -733,7 +772,7 @@ check_fresh_install() {
   if ! run_installer; then fail "frische Installation endet mit Fehler"
   elif [ ! -x "$home/.claude/statusline.sh" ]; then fail "statusline.sh fehlt oder ist nicht ausführbar"
   elif ! cmp -s "$home/.claude/statusline.sh" "$root/statusline.sh"; then fail "statusline.sh ist nicht die Release-Datei"
-  elif [ "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" != "~/.claude/statusline.sh" ]; then
+  elif [ "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" != "$managed_command" ]; then
     fail "statusLine.command nicht gesetzt"
   elif [ -n "$(ls -A "$sb/tmp")" ]; then fail "Temp-Ordner nicht aufgeräumt"
   else ok "frische Installation"
@@ -752,7 +791,7 @@ JSON
   cp "$home/.claude/settings.json" "$sb/original.json"
   run_installer
   local settings="$home/.claude/settings.json" backups
-  backups=$(ls "$home/.claude" | grep -c '^settings\.json\.bak-')
+  backups=$(count_backups)
   if ! jq -e '.env.FOO == "1" and .hooks.Stop == [] and .theme == "dark"
       and .statusLine == {"type":"command","command":"~/.claude/statusline.sh","refreshInterval":2}' \
       "$settings" >/dev/null; then
@@ -762,6 +801,23 @@ JSON
   elif ! cmp -s "$home/old/statusline.sh" "$root/statusline.sh"; then fail "alte Kopie wurde angefasst"
   elif ! grep -q 'Your previous copy at ~/old/statusline.sh was left in place' "$sb/out"; then fail "kein Hinweis auf die alte Kopie"
   else ok "fremde Schlüssel bleiben, alte Kopie wird umgehängt und bleibt liegen"
+  fi
+  drop_sandbox
+}
+
+# Steht die verwaltete Kopie mit absolutem Pfad drin, ist das keine andere Kopie: kein
+# Hinweis, sie zu löschen.
+check_absolute_managed_path() {
+  new_sandbox
+  run_installer
+  jq --arg c "$home/.claude/statusline.sh" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+  mv "$sb/s.json" "$home/.claude/settings.json"
+  run_installer
+  if grep -q 'previous copy' "$sb/out"; then fail "verwaltete Kopie mit absolutem Pfad gilt als andere Kopie"
+  elif [ "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" != "$managed_command" ]; then
+    fail "absoluter Pfad nicht auf die Tilde-Form gebracht"
+  elif [ ! -e "$home/.claude/statusline.sh" ]; then fail "verwaltete Kopie fehlt"
+  else ok "absoluter Pfad der verwalteten Kopie"
   fi
   drop_sandbox
 }
@@ -780,12 +836,82 @@ check_foreign_statusline_kept() {
   drop_sandbox
 }
 
+# settings.json kann Tokens in env tragen. Ihre Rechte bleiben, wie sie waren.
+check_settings_mode_kept() {
+  new_sandbox
+  mkdir -p "$home/.claude"
+  printf '{"env":{"TOKEN":"x"}}\n' > "$home/.claude/settings.json"
+  chmod 600 "$home/.claude/settings.json"
+  run_installer
+  if [ "$(ls -l "$home/.claude/settings.json" | cut -c1-10)" != "-rw-------" ]; then
+    fail "settings.json hat ihre Rechte 600 verloren"
+  else ok "Rechte von settings.json bleiben"
+  fi
+  drop_sandbox
+}
+
+# Ein Symlink, etwa in ein Dotfiles-Repo, bleibt ein Symlink; geschrieben wird ins Ziel.
+check_settings_symlink_kept() {
+  new_sandbox
+  mkdir -p "$home/.claude" "$home/dotfiles"
+  printf '{"theme":"dark"}\n' > "$home/dotfiles/settings.json"
+  ln -s "$home/dotfiles/settings.json" "$home/.claude/settings.json"
+  run_installer
+  if [ ! -L "$home/.claude/settings.json" ]; then fail "Symlink auf settings.json wurde ersetzt"
+  elif ! jq -e '.theme == "dark" and .statusLine.command == "~/.claude/statusline.sh"' \
+      "$home/dotfiles/settings.json" >/dev/null; then fail "Ziel des Symlinks nicht richtig beschrieben"
+  else ok "settings.json als Symlink"
+  fi
+  drop_sandbox
+}
+
+# Eine leere settings.json (touch) gilt wie eine fehlende.
+check_empty_settings() {
+  new_sandbox
+  mkdir -p "$home/.claude"
+  : > "$home/.claude/settings.json"
+  if ! run_installer; then fail "leere settings.json bricht ab"
+  elif ! jq -e '.statusLine.command == "~/.claude/statusline.sh"' "$home/.claude/settings.json" >/dev/null; then
+    fail "leere settings.json nicht befüllt"
+  else ok "leere settings.json"
+  fi
+  drop_sandbox
+}
+
+# Eine vorhandene verwaltete Kopie wird vor dem Ersetzen gesichert; ein Symlink an ihrer
+# Stelle (etwa in einen Checkout) bleibt unangetastet.
+check_existing_statusline_backed_up() {
+  new_sandbox
+  mkdir -p "$home/.claude"
+  printf '# angepasst\n' > "$home/.claude/statusline.sh"
+  run_installer
+  if [ "$(cat "$home/.claude/statusline.sh.bak" 2>/dev/null)" != '# angepasst' ]; then
+    fail "vorhandene statusline.sh nicht gesichert"
+  elif ! cmp -s "$home/.claude/statusline.sh" "$root/statusline.sh"; then fail "statusline.sh nicht ersetzt"
+  else ok "vorhandene statusline.sh wird gesichert"
+  fi
+  drop_sandbox
+  new_sandbox
+  mkdir -p "$home/.claude" "$home/checkout"
+  printf '# checkout\n' > "$home/checkout/statusline.sh"
+  ln -s "$home/checkout/statusline.sh" "$home/.claude/statusline.sh"
+  run_installer
+  if [ ! -L "$home/.claude/statusline.sh" ]; then fail "Symlink auf statusline.sh wurde ersetzt"
+  elif [ "$(cat "$home/checkout/statusline.sh")" != '# checkout' ]; then fail "Ziel des Symlinks wurde überschrieben"
+  elif ! grep -q 'is a symlink' "$sb/out"; then fail "kein Hinweis auf den Symlink"
+  else ok "statusline.sh als Symlink bleibt"
+  fi
+  drop_sandbox
+}
+
 check_bad_checksum_keeps_old_file() {
   new_sandbox
   mkdir -p "$home/.claude"
   printf 'OLD\n' > "$home/.claude/statusline.sh"
   printf '%064d  statusline.sh\n' 0 > "$sb/release/SHA256SUMS"
   if run_installer; then fail "falsche Prüfsumme endet ohne Fehler"
+  elif ! grep -q 'checksum mismatch for statusline.sh' "$sb/out"; then fail "Abbruch nicht wegen der Prüfsumme"
+  elif ! has_log 'SHA256SUMS'; then fail "SHA256SUMS wurde nie geladen"
   elif [ "$(cat "$home/.claude/statusline.sh")" != OLD ]; then fail "alte statusline.sh wurde überschrieben"
   elif [ -e "$home/.claude/settings.json" ]; then fail "settings.json trotz Abbruch angelegt"
   else ok "falsche Prüfsumme lässt alte Datei stehen"
@@ -797,6 +923,8 @@ check_missing_checksum_line_fails() {
   new_sandbox
   printf '%s  other.sh\n' "$(printf '%064d' 1)" > "$sb/release/SHA256SUMS"
   if run_installer; then fail "fehlende Prüfsummenzeile endet ohne Fehler"
+  elif ! grep -q 'checksum mismatch for statusline.sh' "$sb/out"; then fail "Abbruch nicht wegen der Prüfsumme"
+  elif ! has_log 'SHA256SUMS'; then fail "SHA256SUMS wurde nie geladen"
   elif [ -e "$home/.claude/statusline.sh" ]; then fail "statusline.sh ohne Prüfsumme installiert"
   else ok "fehlende Prüfsummenzeile bricht ab"
   fi
@@ -808,8 +936,9 @@ check_invalid_settings_aborts() {
   mkdir -p "$home/.claude"
   printf '{ kaputt' > "$home/.claude/settings.json"
   if run_installer; then fail "ungültiges JSON endet ohne Fehler"
+  elif ! grep -q 'is not a valid JSON object' "$sb/out"; then fail "Abbruch nicht wegen ungültigem JSON"
   elif [ "$(cat "$home/.claude/settings.json")" != '{ kaputt' ]; then fail "ungültige settings.json verändert"
-  elif ls "$home/.claude" | grep -q '^settings\.json\.bak-'; then fail "Sicherung trotz Abbruch angelegt"
+  elif [ "$(count_backups)" != 0 ]; then fail "Sicherung trotz Abbruch angelegt"
   elif [ -e "$home/.claude/statusline.sh" ]; then fail "statusline.sh trotz Abbruch installiert"
   else ok "ungültiges JSON bricht vor jeder Änderung ab"
   fi
@@ -825,7 +954,9 @@ check_release_tag() {
   if has_log 'releases/download/v1.6.0/statusline.sh'; then ok "--version wählt das Release"
   else fail "--version v1.6.0 lädt nicht aus diesem Release"
   fi
-  if run_installer --version 'v1.6.0/../x'; then fail "unsinniger Tag wird angenommen"; fi
+  if run_installer --version 'v1.6.0/../x'; then fail "unsinniger Tag wird angenommen"
+  elif ! grep -q -- '--version expects a tag' "$sb/out"; then fail "unsinniger Tag aus falschem Grund abgewiesen"
+  fi
   drop_sandbox
 }
 
@@ -848,13 +979,16 @@ check_jq_missing() {
   drop_sandbox
 }
 
+# Leer, /, relativ, und Pfade, die sich erst aufgelöst als / erweisen.
 check_home_guard() {
   local bad before=$failed
   new_sandbox
-  for bad in "" "/" "relativ/pfad"; do
+  for bad in "" "/" "relativ/pfad" "//" "/tmp/.."; do
     if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" \
         FAKE_RELEASE_DIR="$sb/release" "$BASH" "$root/install.sh" --yes < /dev/null > "$sb/out" 2>&1; then
       fail "HOME='$bad' wird angenommen"
+    elif ! grep -q 'HOME must' "$sb/out"; then
+      fail "HOME='$bad': Abbruch nicht durch den HOME-Wächter"
     fi
   done
   [ -s "$sb/log" ] && fail "bei unbrauchbarem HOME wurde trotzdem etwas aufgerufen"
@@ -877,7 +1011,12 @@ check_single_recursive_delete() {
 
 check_fresh_install
 check_keeps_foreign_keys
+check_absolute_managed_path
 check_foreign_statusline_kept
+check_settings_mode_kept
+check_settings_symlink_kept
+check_empty_settings
+check_existing_statusline_backed_up
 check_bad_checksum_keeps_old_file
 check_missing_checksum_line_fails
 check_invalid_settings_aborts
@@ -972,6 +1111,9 @@ init_paths() {
     /?*) ;;
     *) die "HOME must be an absolute path other than /, got '${HOME:-}'" ;;
   esac
+  if [ "$(resolve_dir "$HOME")" = / ]; then
+    die "HOME must not resolve to /, got '$HOME'"
+  fi
   CLAUDE_DIR="$HOME/.claude"
   STATUSLINE_PATH="$CLAUDE_DIR/statusline.sh"
   SETTINGS_PATH="$CLAUDE_DIR/settings.json"
@@ -991,6 +1133,13 @@ detect_os() {
     Linux) OS=linux ;;
     *) die "this installer supports macOS and Linux. Windows is not supported yet." ;;
   esac
+}
+
+# Unter sh (dash) liefe das Skript halb: [[ und local gibt es dort nicht verlässlich.
+require_bash() {
+  [ -n "${BASH_VERSION:-}" ] && return 0
+  printf 'claude-code-statusline: run this installer with bash, for example: curl -fsSL <url> | bash\n' >&2
+  exit 1
 }
 
 require_jq() {
@@ -1046,14 +1195,18 @@ config_set() {
   local key=$1 value=$2 line tmp
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   tmp="$CONFIG_PATH.tmp.$$"
-  {
+  if {
     if [ -f "$CONFIG_PATH" ]; then
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in "$key="*) ;; *) printf '%s\n' "$line" ;; esac
       done < "$CONFIG_PATH"
     fi
     printf '%s=%s\n' "$key" "$value"
-  } > "$tmp" && mv -f "$tmp" "$CONFIG_PATH" || { rm -f "$tmp"; die "cannot write $CONFIG_PATH"; }
+  } > "$tmp" && mv -f "$tmp" "$CONFIG_PATH"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  die "cannot write $CONFIG_PATH"
 }
 
 # --- Löschen nur innerhalb einer Positivliste ---
@@ -1121,6 +1274,17 @@ install_statusline() {
     die "checksum mismatch for statusline.sh. Your installed copy was left untouched."
   fi
   mkdir -p "$CLAUDE_DIR" || die "cannot create $CLAUDE_DIR"
+  # Ein Symlink an dieser Stelle zeigt meist in einen Checkout. Den überschreibt kein Update.
+  if [ -L "$STATUSLINE_PATH" ]; then
+    warn "$STATUSLINE_PATH is a symlink, left it alone. Update its target yourself, or remove the link and run the installer again."
+    return 0
+  fi
+  # Eine vorhandene Datei kann von Hand angepasst sein. Sie wird gesichert, die Sicherung
+  # des vorigen Laufs dabei ersetzt.
+  if [ -f "$STATUSLINE_PATH" ] && ! cmp -s "$new" "$STATUSLINE_PATH"; then
+    cp -p "$STATUSLINE_PATH" "$STATUSLINE_PATH.bak" || die "cannot back up $STATUSLINE_PATH"
+    info "Saved your previous $STATUSLINE_PATH as $STATUSLINE_PATH.bak"
+  fi
   staged="$CLAUDE_DIR/.statusline.sh.new.$$"
   if ! { cp "$new" "$staged" && chmod 755 "$staged" && mv -f "$staged" "$STATUSLINE_PATH"; }; then
     rm -f "$staged"
@@ -1130,28 +1294,44 @@ install_statusline() {
 }
 
 # --- settings.json ---
+# Eine leere settings.json (etwa nach touch) gilt wie eine fehlende.
 check_settings_readable() {
-  [ -e "$SETTINGS_PATH" ] || return 0
+  [ -s "$SETTINGS_PATH" ] || return 0
   jq -e 'type == "object"' "$SETTINGS_PATH" >/dev/null 2>&1 \
     || die "$SETTINGS_PATH is not a valid JSON object. Nothing was changed."
 }
 
 current_statusline_command() {
-  [ -e "$SETTINGS_PATH" ] || return 0
+  [ -s "$SETTINGS_PATH" ] || return 0
   jq -r '.statusLine.command // "" | tostring' "$SETTINGS_PATH"
 }
 
-# Zeigt ein statusLine-Befehl auf diese Statusline? Erkannt wird ein einzelner Pfad, mit
-# ~/ am Anfang oder absolut, dessen Datei die Versionskennung dieses Projekts trägt.
-points_to_this_statusline() {
-  local path
+# Der Dateipfad hinter einem statusLine-Befehl: ein einzelner Pfad, mit ~/ am Anfang oder
+# absolut. Alles andere, etwa ein Befehl mit Argumenten, ergibt keinen Pfad.
+command_path() {
   case "$1" in
     ""|*[[:space:]]*) return 1 ;;
-    "~/"*) path="$HOME/${1#\~/}" ;;
-    /*) path=$1 ;;
+    \~/*) printf '%s' "$HOME/${1#\~/}" ;;
+    /*) printf '%s' "$1" ;;
     *) return 1 ;;
   esac
+}
+
+# Zeigt ein Befehl auf diese Statusline, also auf eine Datei mit der Versionskennung
+# dieses Projekts?
+points_to_this_statusline() {
+  local path
+  path=$(command_path "$1") || return 1
   [ -f "$path" ] && grep -q 'claude-code-statusline v' "$path" 2>/dev/null
+}
+
+# Zeigt ein Befehl auf die verwaltete Kopie, gleich ob mit Tilde, absolut oder über einen
+# Symlink? Dann ist er keine andere Kopie, und kein Hinweis darf zum Löschen raten.
+is_managed_command() {
+  local path
+  [ "$1" = "$STATUSLINE_COMMAND" ] && return 0
+  path=$(command_path "$1") || return 1
+  [ -e "$path" ] && [ "$path" -ef "$STATUSLINE_PATH" ]
 }
 
 # write_settings FILTER [JQ-ARGUMENTE]: wendet FILTER auf settings.json an. Vorher eine
@@ -1162,10 +1342,12 @@ write_settings() {
   shift
   mkdir -p "$CLAUDE_DIR" || die "cannot create $CLAUDE_DIR"
   tmp="$SETTINGS_PATH.tmp.$$"
-  if [ -e "$SETTINGS_PATH" ]; then
+  if [ -s "$SETTINGS_PATH" ]; then
     backup="$SETTINGS_PATH.bak-$(date +%Y%m%d-%H%M%S)"
     cp -p "$SETTINGS_PATH" "$backup" || die "cannot back up $SETTINGS_PATH"
-    jq "$@" "$filter" "$SETTINGS_PATH" > "$tmp"
+    # Die Temp-Datei übernimmt zuerst die Rechte des Originals: settings.json kann Tokens
+    # tragen, und eine 600 darf nicht zur 644 werden. Das Überschreiben behält den Modus.
+    cp -p "$SETTINGS_PATH" "$tmp" && jq "$@" "$filter" "$SETTINGS_PATH" > "$tmp"
   else
     jq -n "$@" "$filter" > "$tmp"
   fi || { rm -f "$tmp"; die "cannot update $SETTINGS_PATH"; }
@@ -1184,7 +1366,9 @@ wire_settings() {
   local current
   current=$(current_statusline_command)
   [ "$current" = "$STATUSLINE_COMMAND" ] && return 0
-  if [ -n "$current" ] && points_to_this_statusline "$current"; then
+  if is_managed_command "$current"; then
+    : # die verwaltete Kopie unter anderem Namen: still auf die Tilde-Form bringen
+  elif [ -n "$current" ] && points_to_this_statusline "$current"; then
     if ! ask_yes_no "settings.json points at another copy of this status line ($current). Switch to the managed copy at $STATUSLINE_COMMAND?" y; then
       info "Kept $current. The managed copy at $STATUSLINE_COMMAND is installed but not in use."
       return 0
@@ -1196,12 +1380,14 @@ wire_settings() {
       return 0
     fi
   fi
+  # shellcheck disable=SC2016  # $cmd ist eine jq-Variable, die Shell soll sie nicht sehen
   write_settings '.statusLine = ((if (.statusLine | type) == "object" then .statusLine else {} end)
     + {type: "command", command: $cmd})' --arg cmd "$STATUSLINE_COMMAND"
   info "Set statusLine in $SETTINGS_PATH."
 }
 
 main() {
+  require_bash
   parse_args "$@"
   init_paths
   detect_os
@@ -1227,7 +1413,7 @@ shellcheck -x --source-path=/Users/chris/Sites/claude-code-statusline \
   /Users/chris/Sites/claude-code-statusline/tests/fakes/*
 ```
 
-Expected: nur `ok     install (…)`-Zeilen, Exit 0; shellcheck ohne Ausgabe. Der lokale Lauf nutzt `/bin/bash` 3.2 (`$BASH` des Testlaufs), das ist zugleich die Prüfung der 3.2-Verträglichkeit.
+Expected: nur `ok     install (…)`-Zeilen, Exit 0. shellcheck meldet nur SC2034 („appears unused") für Globale, die erst Task 3 bis 5 lesen (`OS`, `UNINSTALL`, `SWAP_FLAG`, `BUNDLE_ID`, `URL_SCHEME`, `HANDLER_PATH`, `MARKER_PATH`, `APP_PATH`, `DESKTOP_PATH`), sonst nichts; ab Task 5 ist shellcheck still. Der lokale Lauf nutzt `/bin/bash` 3.2 (`$BASH` des Testlaufs), das ist zugleich die Prüfung der 3.2-Verträglichkeit.
 
 - [ ] **Step 6: Commit**
 
@@ -1299,7 +1485,8 @@ printf '{"schemaVersion":1,"switched":true,"message":"Switched to Account-2 (b@e
 run_handler() {
   : > "$sb/log"
   env -i PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_CSWAP_DIR="$sb/cswap" \
-    FAKE_UNAME="${FAKE_UNAME:-Darwin}" "$BASH" "$sb/handler.sh" "$1" > "$sb/out" 2>&1
+    FAKE_UNAME="${FAKE_UNAME:-Darwin}" FAKE_FAIL="${FAKE_FAIL:-}" \
+    "$BASH" "$sb/handler.sh" "$1" > "$sb/out" 2>&1
   rc=$?
 }
 
@@ -1310,7 +1497,9 @@ expect() {
     printf 'FEHLER handler %s: Exit %s, erwartet %s\n' "$name" "$rc" "$want_rc"; cat "$sb/log"; failed=1
   elif [ -n "$want_log" ] && ! grep -qF -- "$want_log" "$sb/log"; then
     printf 'FEHLER handler %s: "%s" fehlt im Log\n' "$name" "$want_log"; cat "$sb/log"; failed=1
-  elif [ -n "$deny_log" ] && grep -qF -- "$deny_log" "$sb/log"; then
+  # Verbote gelten nur für Aufrufe: jede Fake-Zeile beginnt mit dem Werkzeugnamen. So
+  # stört der Wortlaut einer Mitteilung im osascript-Log die Prüfung nicht.
+  elif [ -n "$deny_log" ] && grep -q -- "^$deny_log" "$sb/log"; then
     printf 'FEHLER handler %s: "%s" darf nicht im Log stehen\n' "$name" "$deny_log"; cat "$sb/log"; failed=1
   else
     printf 'ok     handler (%s)\n' "$name"
@@ -1330,6 +1519,18 @@ expect "anderer Pfad" 'claude-statusline://switch/x' 2 '' 'cswap'
 expect "leeres Ziel" 'claude-statusline://switch?to=' 2 '' 'cswap switch'
 expect "Zeilenumbruch im Ziel" 'claude-statusline://switch?to=%0Ab%40example.com' 2 '' 'cswap switch'
 expect "Nullbyte im Ziel" 'claude-statusline://switch?to=b%40example.com%00' 2 '' 'cswap switch'
+expect "doppeltes Ziel" 'claude-statusline://switch?to=b%40example.com?to=a%40example.com' 2 '' 'cswap switch'
+expect "Fragment" 'claude-statusline://switch?to=b%40example.com#x' 2 '' 'cswap switch'
+
+cat > "$sb/cswap/list.json" <<'JSON'
+{"schemaVersion":1,"accounts":[
+  {"number":1,"email":"a@example.com"},{"number":3,"email":"a+b@example.com"}]}
+JSON
+expect "Plus in der Mail" 'claude-statusline://switch?to=a%2Bb%40example.com' 0 'cswap switch 3 --json'
+
+printf '1\n' > "$sb/cswap/list.exit"
+expect "cswap list scheitert" 'claude-statusline://switch?to=a%40example.com' 2 'Could not read the accounts' 'cswap switch'
+rm -f "$sb/cswap/list.exit"
 
 cat > "$sb/cswap/list.json" <<'JSON'
 {"schemaVersion":1,"accounts":[
@@ -1348,9 +1549,17 @@ FAKE_UNAME=Linux run_handler 'claude-statusline://switch'
 if grep -q 'No account found' "$sb/out"; then printf 'ok     handler (ohne notify-send auf stderr)\n'
 else printf 'FEHLER handler ohne notify-send: keine Meldung auf stderr\n'; failed=1; fi
 
+FAKE_FAIL=osascript run_handler 'claude-statusline://switch'
+if grep -q '^Claude Statusline: ' "$sb/out"; then printf 'ok     handler (scheitert osascript, steht die Meldung auf stderr)\n'
+else printf 'FEHLER handler: osascript scheitert und die Meldung geht verloren\n'; failed=1; fi
+
 # cswap rollt einen abgebrochenen Tausch nicht zurück: kein Timeout, kein kill, kein
-# Hintergrundlauf im Handler.
-if bash "$root/tests/extract-handler.sh" | grep -nE '\btimeout\b|\bkill\b|&[[:space:]]*$'; then
+# Hintergrundlauf im Handler. Geprüft wird nur Code, nicht Kommentare; ohne Rumpf ist
+# das ein Fehler, kein stilles ok.
+if ! body=$(bash "$root/tests/extract-handler.sh"); then
+  printf 'FEHLER handler: kein Rumpf zum Prüfen\n'; failed=1
+elif printf '%s\n' "$body" | grep -v '^[[:space:]]*#' \
+    | grep -nE '\btimeout\b|\bkill\b|\bnohup\b|\bdisown\b|&[[:space:]]*($|;)'; then
   printf 'FEHLER handler: Timeout, kill oder Hintergrundlauf im Handler\n'; failed=1
 else
   printf 'ok     handler (cswap switch wird nie abgebrochen)\n'
@@ -1362,7 +1571,7 @@ exit "$failed"
 - [ ] **Step 3: Tests laufen lassen, sie müssen scheitern**
 
 Run: `bash /Users/chris/Sites/claude-code-statusline/tests/handler.sh`
-Expected: `extract-handler: kein Handler-Rumpf in install.sh` und `FEHLER handler …` für jeden Fall.
+Expected: `extract-handler: kein Handler-Rumpf in install.sh` und `FEHLER handler …` für jeden Fall, auch für den Wächter-Block (`kein Rumpf zum Prüfen`).
 
 - [ ] **Step 4: Handler in `install.sh` einbetten**
 
@@ -1380,8 +1589,8 @@ handler_body() {
 #
 # Erlaubt ist nur claude-statusline://switch, optional mit ?to=<mail>. Ein Ziel gilt nur,
 # wenn cswap genau ein Konto mit dieser Mail verwaltet; gewechselt wird dann über dessen
-# Nummer, weil cswap bei einer mehrdeutigen Mail interaktiv nachfragen würde. So kann
-# auch eine Webseite, die das Schema aufruft, nur zwischen den eigenen Konten wechseln.
+# Nummer, damit genau das geprüfte Konto getroffen wird. So kann auch eine Webseite, die
+# das Schema aufruft, nur zwischen den eigenen Konten wechseln.
 # cswap switch läuft ohne Timeout und wird nie abgebrochen: cswap rollt einen
 # abgebrochenen Tausch nicht zurück, ein halber Login wäre die Folge.
 set -u
@@ -1420,6 +1629,7 @@ decode_target() {
 
 # Die Nummer des einen Kontos mit dieser Mail, "none" oder "ambiguous".
 account_number() {
+  # shellcheck disable=SC2016  # $mail ist eine jq-Variable, die Shell soll sie nicht sehen
   printf '%s' "$2" | "$JQ_BIN" -r --arg mail "$1" '
     [.accounts[]? | select((.email // "" | ascii_downcase) == ($mail | ascii_downcase)) | .number]
     | if length == 1 then .[0] | tostring
@@ -1505,7 +1715,7 @@ git -C /Users/chris/Sites/claude-code-statusline commit -m "feat(install): Klick
 - Modify: `tests/install.sh` (neue Fälle)
 
 **Interfaces:**
-- Consumes: `ask_yes_no`, `config_get`, `config_set`, `safe_remove_tree`, `warn`, `info`, `OS`, `TMP_DIR`, `SWAP_FLAG`, Pfad-Globale (Task 2); `write_switch_handler` (Task 3).
+- Consumes: `die`, `warn`, `info`, `ask_yes_no`, `config_get`, `config_set`, `safe_remove_tree`, `OS`, `TMP_DIR`, `SWAP_FLAG`, `SETTINGS_PATH`, `HANDLER_PATH`, `MARKER_PATH`, `APP_PATH`, `DESKTOP_PATH`, `DESKTOP_NAME`, `URL_SCHEME`, `BUNDLE_ID` (Task 2); `write_switch_handler` (Task 3).
 - Produces: `setup_swap`, `remove_switch_handler` (von Task 5 benutzt), Globale `CSWAP_BIN`. Config-Schlüssel `swap=on|off`.
 
 - [ ] **Step 1: Fälle in `tests/install.sh` ergänzen**
@@ -1540,6 +1750,10 @@ check_swap_macos() {
   elif ! has_log 'LSUIElement bool true'; then fail "App nicht als Hintergrund-App markiert"
   elif ! has_log "codesign --force --sign - $app"; then fail "App nicht neu signiert"
   elif ! has_log "lsregister -f $app"; then fail "App nicht registriert"
+  elif [ "$(awk '/^codesign /{print NR; exit}' "$sb/log")" -le "$(awk '/^PlistBuddy /{n=NR} END{print n+0}' "$sb/log")" ]; then
+    fail "codesign läuft vor der letzten Plist-Änderung, die Signatur wäre ungültig"
+  elif [ "$(awk '/^lsregister -f /{print NR; exit}' "$sb/log")" -le "$(awk '/^codesign /{print NR; exit}' "$sb/log")" ]; then
+    fail "lsregister läuft vor codesign"
   elif ! grep -q 'on open location' "$app/Contents/source.applescript"; then fail "AppleScript ohne open location"
   elif ! grep -q '.claude/statusline/switch-handler.sh' "$app/Contents/source.applescript"; then fail "AppleScript ruft den Handler nicht"
   elif ! grep -qF "CSWAP_BIN=$home/.local/bin/cswap" "$home/.claude/statusline/switch-handler.sh"; then fail "Handler kennt cswap nicht"
@@ -1569,8 +1783,10 @@ check_swap_linux() {
 check_managed_account_not_readded() {
   new_sandbox
   printf '{"schemaVersion":1,"active":{"email":"a@example.com","managed":true}}\n' > "$sb/cswap/status.json"
-  run_installer --swap
-  if has_log 'cswap add'; then fail "gemanagtes Konto erneut aufgenommen"
+  if ! run_installer --swap; then fail "--swap mit gemanagtem Konto endet mit Fehler"
+  elif ! has_log 'cswap status --json'; then fail "Kontostand nie abgefragt"
+  elif has_log 'cswap add'; then fail "gemanagtes Konto erneut aufgenommen"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker fehlt"
   else ok "gemanagtes Konto bleibt"
   fi
   drop_sandbox
@@ -1590,8 +1806,10 @@ check_swap_off_respected_on_update() {
   new_sandbox
   mkdir -p "$home/.claude/statusline"
   printf 'swap=off\n' > "$home/.claude/statusline/config"
-  run_installer
-  if has_log 'uv ' || has_log 'cswap ' || has_log 'xdg-mime'; then fail "Update ignoriert swap=off"
+  if ! run_installer; then fail "Update mit swap=off endet mit Fehler"
+  elif has_log 'uv ' || has_log 'cswap ' || has_log 'xdg-mime'; then fail "Update ignoriert swap=off"
+  elif ! grep -q 'Click-to-switch is off' "$sb/out"; then fail "kein Hinweis auf swap=off"
+  elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "swap=off nicht erhalten"
   else ok "Update respektiert swap=off"
   fi
   drop_sandbox
@@ -1600,9 +1818,12 @@ check_swap_off_respected_on_update() {
 check_no_swap_removes_handler() {
   new_sandbox
   unmanaged_status
-  FAKE_UNAME=Linux run_installer --swap
-  FAKE_UNAME=Linux run_installer --no-swap
-  if [ -e "$home/.claude/statusline/switch-handler" ]; then fail "--no-swap lässt den Marker stehen"
+  local desktop="$home/.local/share/applications/claude-statusline-switch.desktop"
+  if ! FAKE_UNAME=Linux run_installer --swap; then fail "Vorbedingung: --swap endet mit Fehler"
+  elif [ ! -e "$home/.claude/statusline/switch-handler" ] || [ ! -e "$desktop" ]; then
+    fail "Vorbedingung: --swap legt Marker und Desktop-Datei nicht an"
+  elif ! FAKE_UNAME=Linux run_installer --no-swap; then fail "--no-swap endet mit Fehler"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "--no-swap lässt den Marker stehen"
   elif [ -e "$home/.claude/statusline/switch-handler.sh" ]; then fail "--no-swap lässt den Handler stehen"
   elif [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "--no-swap lässt die Desktop-Datei stehen"
   elif [ "$(grep '^swap=' "$home/.claude/statusline/config")" != swap=off ]; then fail "--no-swap speichert nicht swap=off"
@@ -1670,6 +1891,50 @@ check_switch_url_note() {
   fi
   drop_sandbox
 }
+
+check_swap_off_macos_touches_nothing() {
+  new_sandbox
+  if ! FAKE_UNAME=Darwin run_installer; then fail "macOS ohne Swap endet mit Fehler"
+  elif has_log 'osacompile' || has_log 'PlistBuddy' || has_log 'codesign' || has_log 'lsregister'; then
+    fail "macOS mit swap=off ruft Registrierungswerkzeuge"
+  else ok "macOS mit swap=off rührt nichts an"
+  fi
+  drop_sandbox
+}
+
+check_no_swap_macos_removes_app() {
+  new_sandbox
+  unmanaged_status
+  local app="$home/Applications/Claude Statusline Switch.app"
+  FAKE_UNAME=Darwin run_installer --swap
+  if [ ! -d "$app" ]; then fail "Vorbedingung: --swap baut keine App"
+  elif ! FAKE_UNAME=Darwin run_installer --no-swap; then fail "macOS --no-swap endet mit Fehler"
+  elif ! has_log "lsregister -u $app"; then fail "App nicht bei LaunchServices abgemeldet"
+  elif [ -e "$app" ]; then fail "App bleibt nach --no-swap"
+  else ok "macOS --no-swap entfernt die App"
+  fi
+  drop_sandbox
+}
+
+# Scheitert die Registrierung mittendrin, bleibt nichts Halbfertiges liegen.
+check_partial_registration_cleaned_up() {
+  new_sandbox
+  unmanaged_status
+  FAKE_UNAME=Darwin FAKE_FAIL=codesign run_installer --swap
+  if [ -e "$home/Applications/Claude Statusline Switch.app" ]; then fail "unsignierte App bleibt liegen"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheiterter Signatur"
+  else ok "gescheiterte Signatur räumt die App weg"
+  fi
+  drop_sandbox
+  new_sandbox
+  unmanaged_status
+  FAKE_UNAME=Linux FAKE_FAIL=xdg-mime run_installer --swap
+  if [ -e "$home/.local/share/applications/claude-statusline-switch.desktop" ]; then fail "Desktop-Datei ohne Zuordnung bleibt liegen"
+  elif [ -e "$home/.claude/statusline/switch-handler" ]; then fail "Marker trotz gescheitertem xdg-mime"
+  else ok "gescheitertes xdg-mime räumt die Desktop-Datei weg"
+  fi
+  drop_sandbox
+}
 ```
 
 Und die Aufrufe vor `check_single_recursive_delete` ergänzen:
@@ -1687,12 +1952,15 @@ check_registration_failure_leaves_no_marker
 check_without_uv_or_pipx
 check_pipx_fallback
 check_switch_url_note
+check_swap_off_macos_touches_nothing
+check_no_swap_macos_removes_app
+check_partial_registration_cleaned_up
 ```
 
 - [ ] **Step 2: Tests laufen lassen, die neuen müssen scheitern**
 
 Run: `bash /Users/chris/Sites/claude-code-statusline/tests/install.sh`
-Expected: die Fälle aus Task 2 `ok`, die neuen `FEHLER install …` (kein `swap=` in der Config, keine uv-Aufrufe).
+Expected: die Fälle aus Task 2 `ok`, die neuen `FEHLER install …` (kein `swap=` in der Config, keine uv-Aufrufe). Ausnahme: `check_swap_off_macos_touches_nothing` ist schon grün, er sichert ab, dass Task 4 auf macOS ohne Swap nichts registriert.
 
 - [ ] **Step 3: Swap-Einrichtung in `install.sh`**
 
@@ -1705,8 +1973,13 @@ Vor `main()` einfügen:
 CSWAP_BIN=""
 
 find_cswap() {
+  local uv_bin=""
+  command -v uv >/dev/null 2>&1 && uv_bin=$(uv tool dir --bin 2>/dev/null)
   if command -v cswap >/dev/null 2>&1; then
     CSWAP_BIN=$(command -v cswap)
+  elif [ -n "$uv_bin" ] && [ -x "$uv_bin/cswap" ]; then
+    # uv legt Werkzeuge ab, wo UV_TOOL_BIN_DIR oder XDG_BIN_HOME es sagen.
+    CSWAP_BIN="$uv_bin/cswap"
   elif [ -x "$HOME/.local/bin/cswap" ]; then
     CSWAP_BIN="$HOME/.local/bin/cswap"
   else
@@ -1740,6 +2013,10 @@ install_cswap() {
 adopt_current_account() {
   local status email managed
   status=$("$CSWAP_BIN" status --json 2>/dev/null) || status=""
+  if [ -z "$status" ]; then
+    warn "could not read the account status from cswap. Add the account yourself with: cswap add"
+    return 0
+  fi
   email=$(printf '%s' "$status" | jq -r '.active.email // ""' 2>/dev/null)
   managed=$(printf '%s' "$status" | jq -r '.active.managed // false' 2>/dev/null)
   if [ -z "$email" ]; then
@@ -1828,7 +2105,8 @@ register_url_handler() {
 install_switch_handler() {
   write_switch_handler "$CSWAP_BIN" "$(command -v jq)"
   if ! register_url_handler; then
-    rm -f "$MARKER_PATH"
+    # Halbfertiges (unsignierte App, Desktop-Datei ohne Zuordnung) bleibt nicht liegen.
+    remove_switch_handler
     warn "Click-to-switch is not active: the link handler could not be registered. You can still switch with: cswap switch"
     return 1
   fi
@@ -1841,6 +2119,10 @@ remove_switch_handler() {
   case "$OS" in
     macos)
       if [ -e "$APP_PATH" ] || [ -L "$APP_PATH" ]; then
+        # Erst prüfen, dann abmelden: ein Symlink auf eine fremde App darf nicht bei
+        # LaunchServices abgemeldet werden, bevor der Löschwächter ihn abweist.
+        [ -L "$APP_PATH" ] && die "refusing to delete $APP_PATH: it is a symlink"
+        [ -d "$APP_PATH" ] || die "refusing to delete $APP_PATH: not a directory"
         lsregister -u "$APP_PATH" >/dev/null 2>&1
         safe_remove_tree "$APP_PATH"
       fi ;;
@@ -1855,12 +2137,16 @@ remove_switch_handler() {
   return 0
 }
 
+# Die Link-Variable gewinnt gegen den Handler, aus settings.json wie aus der Shell.
 note_switch_url_override() {
-  local url
-  [ -e "$SETTINGS_PATH" ] || return 0
-  url=$(jq -r '.env.CLAUDE_STATUSLINE_SWITCH_URL // empty' "$SETTINGS_PATH" 2>/dev/null)
-  [ -n "$url" ] || return 0
-  info "Note: CLAUDE_STATUSLINE_SWITCH_URL is set in settings.json ($url). Clicks go there, not to the handler, until you remove it."
+  local url=""
+  [ -s "$SETTINGS_PATH" ] && url=$(jq -r '.env.CLAUDE_STATUSLINE_SWITCH_URL // empty' "$SETTINGS_PATH" 2>/dev/null)
+  if [ -n "$url" ]; then
+    info "Note: CLAUDE_STATUSLINE_SWITCH_URL is set in settings.json ($url). Clicks go there, not to the handler, until you remove it."
+  elif [ -n "${CLAUDE_STATUSLINE_SWITCH_URL:-}" ]; then
+    info "Note: CLAUDE_STATUSLINE_SWITCH_URL is set in your shell (${CLAUDE_STATUSLINE_SWITCH_URL}). Clicks go there, not to the handler, until you remove it."
+  fi
+  return 0
 }
 
 print_swap_guide() {
@@ -1924,7 +2210,7 @@ git -C /Users/chris/Sites/claude-code-statusline commit -m "feat(install): cswap
 - Modify: `tests/install.sh` (neue Fälle)
 
 **Interfaces:**
-- Consumes: `remove_switch_handler` (Task 4), `write_settings`, `current_statusline_command`, `points_to_this_statusline`, `safe_remove_tree` (Task 2).
+- Consumes: `remove_switch_handler` (Task 4), `write_settings`, `current_statusline_command`, `is_managed_command`, `points_to_this_statusline`, `safe_remove_tree`, `init_paths` (Task 2).
 - Produces: `install.sh --uninstall`.
 
 - [ ] **Step 1: Fälle in `tests/install.sh` ergänzen**
@@ -1959,15 +2245,37 @@ check_uninstall_removes_only_own_paths() {
   done
 }
 
+# --uninstall entfernt statusLine nur, wenn es auf die verwaltete Kopie zeigt. Eine
+# fremde Statusline und eine andere Kopie dieser Statusline bleiben eingehängt.
 check_uninstall_keeps_foreign_statusline() {
+  local command
+  for command in \~/other.sh \~/old/statusline.sh; do
+    new_sandbox
+    mkdir -p "$home/.claude" "$home/old"
+    printf '#!/bin/sh\n' > "$home/other.sh"
+    cp "$root/statusline.sh" "$home/old/statusline.sh"
+    jq -n --arg c "$command" '{statusLine: {type: "command", command: $c}}' > "$home/.claude/settings.json"
+    cp "$home/.claude/settings.json" "$sb/original.json"
+    run_installer --uninstall
+    if has_log 'curl '; then fail "--uninstall lädt herunter"
+    elif ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "--uninstall verändert statusLine auf $command"
+    elif ! cmp -s "$home/old/statusline.sh" "$root/statusline.sh"; then fail "--uninstall fasst die andere Kopie an"
+    else ok "--uninstall lässt $command stehen"
+    fi
+    drop_sandbox
+  done
+}
+
+# Die verwaltete Kopie mit absolutem Pfad gilt als eigene: statusLine wird entfernt.
+# Fiele die Prüfung erst nach dem Löschen von statusline.sh, bliebe der Eintrag stehen.
+check_uninstall_absolute_command() {
   new_sandbox
-  mkdir -p "$home/.claude"
-  printf '#!/bin/sh\n' > "$home/other.sh"
-  printf '{"statusLine":{"type":"command","command":"~/other.sh"}}\n' > "$home/.claude/settings.json"
-  cp "$home/.claude/settings.json" "$sb/original.json"
+  run_installer
+  jq --arg c "$home/.claude/statusline.sh" '.statusLine.command = $c' "$home/.claude/settings.json" > "$sb/s.json"
+  mv "$sb/s.json" "$home/.claude/settings.json"
   run_installer --uninstall
-  if cmp -s "$home/.claude/settings.json" "$sb/original.json"; then ok "--uninstall lässt fremde Statusline stehen"
-  else fail "--uninstall verändert eine fremde Statusline"
+  if jq -e 'has("statusLine")' "$home/.claude/settings.json" >/dev/null; then fail "--uninstall lässt absoluten statusLine-Pfad stehen"
+  else ok "--uninstall erkennt die verwaltete Kopie auch absolut"
   fi
   drop_sandbox
 }
@@ -1979,7 +2287,9 @@ check_guard_symlinked_app() {
   printf 'keep\n' > "$sb/outside/sentinel"
   ln -s "$sb/outside" "$home/Applications/Claude Statusline Switch.app"
   if FAKE_UNAME=Darwin run_installer --uninstall; then fail "Symlink als App-Pfad wird nicht abgewiesen"
+  elif has_log 'curl '; then fail "--uninstall lädt herunter"
   elif [ ! -f "$sb/outside/sentinel" ]; then fail "Ziel des Symlinks wurde gelöscht"
+  elif has_log 'lsregister -u'; then fail "fremde App bei LaunchServices abgemeldet"
   elif ! grep -q 'refusing to delete' "$sb/out"; then fail "keine Begründung für die Weigerung"
   else ok "Löschwächter: App-Pfad als Symlink"
   fi
@@ -1993,40 +2303,66 @@ check_guard_symlinked_applications_dir() {
   printf 'keep\n' > "$sb/outside/Claude Statusline Switch.app/sentinel"
   ln -s "$sb/outside" "$home/Applications"
   if FAKE_UNAME=Darwin run_installer --uninstall; then fail "umgelenktes ~/Applications wird nicht abgewiesen"
+  elif has_log 'curl '; then fail "--uninstall lädt herunter"
   elif [ ! -f "$sb/outside/Claude Statusline Switch.app/sentinel" ]; then fail "App außerhalb von HOME gelöscht"
   else ok "Löschwächter: ~/Applications als Symlink"
   fi
   drop_sandbox
 }
 
-# HOME zeigt auf einen Ordner mitten in einem fremden Baum. Nach Installation und
-# Deinstallation muss der Baum außerhalb von HOME unverändert sein.
-check_guard_bent_home() {
-  local before after
+# Der Wächter selbst, direkt aufgerufen: Pfade unter HOME, die nicht der App-Pfad sind,
+# werden abgewiesen; gelöscht wird nur der App-Pfad und das eigene Temp. Kein Ziel liegt
+# außerhalb der Sandbox, damit ein kaputter Wächter im Testlauf nichts Fremdes löscht.
+# install.sh endet mit main "$@"; ohne diese Zeile lässt es sich als Bibliothek laden.
+check_guard_direct() {
+  local target lib before=$failed
   new_sandbox
-  unmanaged_status
-  mkdir -p "$sb/tree/Applications/Claude Statusline Switch.app" "$sb/tree/user"
-  printf 'keep\n' > "$sb/tree/Applications/Claude Statusline Switch.app/sentinel"
-  printf 'keep\n' > "$sb/tree/sibling"
-  before=$(find "$sb/tree" -path "$sb/tree/user" -prune -o -print | sort)
-  home="$sb/tree/user"
-  FAKE_UNAME=Darwin run_installer --swap
-  FAKE_UNAME=Darwin run_installer --uninstall
-  after=$(find "$sb/tree" -path "$sb/tree/user" -prune -o -print | sort)
-  if [ "$before" != "$after" ]; then fail "umgebogenes HOME: außerhalb von HOME wurde etwas verändert"
-  else ok "Löschwächter: umgebogenes HOME"
+  lib="$sb/lib.sh"
+  sed '$d' "$root/install.sh" > "$lib"
+  mkdir -p "$home/Applications/Claude Statusline Switch.app" "$home/.claude" "$home/Documents" \
+    "$sb/tmp/own" "$sb/tmp/other"
+  printf 'keep\n' > "$home/Documents/sentinel"
+  printf 'keep\n' > "$sb/tmp/other/sentinel"
+  for target in "$home" "$home/" "$home/." "$home/Applications" "$home/.claude" "$home/Documents" \
+      "$home/Applications/Claude Statusline Switch.app/.." "$sb" "$sb/tmp/other"; do
+    # shellcheck source=install.sh
+    if ( HOME=$home; . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; safe_remove_tree "$target" ) >/dev/null 2>&1; then
+      fail "safe_remove_tree nimmt $target an"
+    fi
+  done
+  if [ ! -f "$home/Documents/sentinel" ] || [ ! -f "$sb/tmp/other/sentinel" ]; then
+    fail "safe_remove_tree hat außerhalb gelöscht"
   fi
+  # shellcheck source=install.sh
+  if ! ( HOME=$home; . "$lib"; init_paths; TMP_DIR="$sb/tmp/own"; safe_remove_tree "$TMP_DIR" ) >/dev/null 2>&1 \
+      || [ -e "$sb/tmp/own" ]; then
+    fail "eigenes Temp nicht gelöscht"
+  fi
+  # HOME mit Symlink-Komponente: der App-Pfad muss trotzdem erkannt werden.
+  ln -s "$home" "$sb/homelink"
+  # shellcheck source=install.sh
+  if ! ( HOME=$sb/homelink; . "$lib"; init_paths; TMP_DIR=""; safe_remove_tree "$APP_PATH" ) >/dev/null 2>&1 \
+      || [ -e "$home/Applications/Claude Statusline Switch.app" ]; then
+    fail "App-Pfad unter HOME-Symlink nicht gelöscht"
+  fi
+  [ "$failed" = "$before" ] && ok "Löschwächter: nur App-Pfad und eigenes Temp"
   drop_sandbox
 }
 
-check_guard_empty_home_uninstall() {
+# Leeres HOME und Pfade, die aufgelöst / ergeben, brechen auch --uninstall vor allem ab.
+check_guard_bad_home_uninstall() {
+  local bad before=$failed
   new_sandbox
-  if env -i HOME="" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_UNAME=Darwin \
-      "$BASH" "$root/install.sh" --yes --uninstall < /dev/null > "$sb/out" 2>&1; then
-    fail "--uninstall mit leerem HOME wird angenommen"
-  elif [ -s "$sb/log" ]; then fail "--uninstall mit leerem HOME ruft trotzdem Werkzeuge"
-  else ok "Löschwächter: leeres HOME bei --uninstall"
-  fi
+  for bad in "" "//" "/tmp/.."; do
+    if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" FAKE_UNAME=Darwin \
+        "$BASH" "$root/install.sh" --yes --uninstall < /dev/null > "$sb/out" 2>&1; then
+      fail "--uninstall mit HOME='$bad' wird angenommen"
+    elif ! grep -q 'HOME must' "$sb/out"; then
+      fail "--uninstall mit HOME='$bad': Abbruch nicht durch den HOME-Wächter"
+    fi
+  done
+  [ -s "$sb/log" ] && fail "--uninstall mit unbrauchbarem HOME ruft trotzdem Werkzeuge"
+  [ "$failed" = "$before" ] && ok "Löschwächter: unbrauchbares HOME bei --uninstall"
   drop_sandbox
 }
 ```
@@ -2036,16 +2372,17 @@ Aufrufe vor `check_single_recursive_delete` ergänzen:
 ```bash
 check_uninstall_removes_only_own_paths
 check_uninstall_keeps_foreign_statusline
+check_uninstall_absolute_command
 check_guard_symlinked_app
 check_guard_symlinked_applications_dir
-check_guard_bent_home
-check_guard_empty_home_uninstall
+check_guard_direct
+check_guard_bad_home_uninstall
 ```
 
 - [ ] **Step 2: Tests laufen lassen, die neuen müssen scheitern**
 
 Run: `bash /Users/chris/Sites/claude-code-statusline/tests/install.sh`
-Expected: `FEHLER install Darwin: statusline.sh bleibt` usw., weil `--uninstall` heute noch eine normale Installation ausführt.
+Expected: `FEHLER install Darwin: statusline.sh bleibt`, `FEHLER install --uninstall lädt herunter` usw., weil `--uninstall` heute noch eine normale Installation ausführt. Schon grün sind `check_guard_direct` und `check_guard_bad_home_uninstall`: Sie prüfen `safe_remove_tree` und `init_paths` aus Task 2 und sichern ab, dass Task 5 daran nichts lockert.
 
 - [ ] **Step 3: `uninstall` in `install.sh`**
 
@@ -2060,15 +2397,18 @@ uninstall() {
   remove_switch_handler
   rm -f "$CONFIG_PATH"
   current=$(current_statusline_command)
-  if [ "$current" = "$STATUSLINE_COMMAND" ] \
-    || { [ -n "$current" ] && points_to_this_statusline "$current"; }; then
+  # Nur die verwaltete Kopie hat der Installer eingehängt, also nimmt er nur sie heraus.
+  # is_managed_command braucht die Datei, deshalb steht das vor dem Löschen.
+  if is_managed_command "$current"; then
     write_settings 'del(.statusLine)'
     info "Removed statusLine from $SETTINGS_PATH."
+  elif [ -n "$current" ] && points_to_this_statusline "$current"; then
+    info "statusLine still points at your other copy ($current). It was left in place."
   fi
-  rm -f "$STATUSLINE_PATH"
+  rm -f "$STATUSLINE_PATH" "$STATUSLINE_PATH.bak"
   rmdir "$STATE_DIR" 2>/dev/null
   info "Removed claude-code-statusline."
-  info "cswap and its accounts were kept. To remove them: cswap purge, then uv tool uninstall claude-swap"
+  info "cswap and its accounts were kept. To remove them: cswap purge, then uv tool uninstall claude-swap (or pipx uninstall claude-swap)"
   info "Usage history stays in $CLAUDE_DIR/statusline-accounts. Delete that folder if you no longer need it."
 }
 ```
@@ -2077,6 +2417,7 @@ uninstall() {
 
 ```bash
 main() {
+  require_bash
   parse_args "$@"
   init_paths
   detect_os
@@ -2095,7 +2436,7 @@ main() {
 }
 ```
 
-Achtung, Reihenfolge in `uninstall`: `points_to_this_statusline` liest `statusline.sh`, also wird die Datei erst danach gelöscht.
+Achtung, Reihenfolge in `uninstall`: `is_managed_command` und `points_to_this_statusline` lesen `statusline.sh`, also wird die Datei erst danach gelöscht. `check_uninstall_absolute_command` fällt um, wenn das vertauscht wird.
 
 - [ ] **Step 4: Tests und shellcheck**
 
@@ -2105,7 +2446,7 @@ shellcheck -x --source-path=/Users/chris/Sites/claude-code-statusline \
   /Users/chris/Sites/claude-code-statusline/install.sh /Users/chris/Sites/claude-code-statusline/tests/install.sh
 ```
 
-Expected: alle `ok`, Exit 0. `check_single_recursive_delete` zählt weiterhin genau ein `rm -rf`.
+Expected: alle `ok`, Exit 0, shellcheck ohne Ausgabe (die SC2034-Meldungen aus Task 2 sind jetzt weg, weil alle Globale gelesen werden). `check_single_recursive_delete` zählt weiterhin genau ein `rm -rf`.
 
 - [ ] **Step 5: Commit**
 
@@ -2195,11 +2536,11 @@ und im Release-Schritt:
 - [ ] **Step 4b: Datum prüfen**
 
 Run: `grep -n '^## 1.6.0 - [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$' /Users/chris/Sites/claude-code-statusline/CHANGELOG.md`
-Expected: genau eine Trefferzeile. `YYYY-MM-DD` darf nicht stehen bleiben.
+Expected: genau eine Trefferzeile. `YYYY-MM-DD` darf nicht stehen bleiben. Wird nicht am selben Tag getaggt, das Datum unmittelbar vor `git tag` (Task 7, Step 6) korrigieren und neu committen.
 
 - [ ] **Step 5: README**
 
-Einleitungssatz unter der Codezeile `# claude-code-statusline`: „No daemon, no config file, no dependencies beyond `jq`." ersetzen durch „No daemon, nothing to configure, no dependencies beyond `jq`."
+Einleitungssatz unter der Codezeile `# claude-code-statusline`: „No daemon, no config file, no dependencies beyond `jq`." ersetzen durch „No daemon, nothing to configure. The status line itself needs only `jq`; the installer and click-to-switch need a few more tools, listed under [Requirements](#requirements)."
 
 In der Segmenttabelle die Zeile `Account switch` ersetzen:
 
@@ -2328,6 +2669,8 @@ git -C /Users/chris/Sites/claude-code-statusline push -u origin feat/installer
 
 Danach muss der CI-Lauf auf GitHub grün sein (`gh run watch` oder `gh pr checks`). Er ist der einzige Lauf unter bash 5 und der einzige unter Linux.
 
+**Reihenfolge Merge und Tag:** Die neuen README-Befehle zeigen auf `releases/latest/download/install.sh`. Bis zum Tag `v1.6.0` gibt es diese Datei nicht (das letzte Release 1.5.0 hat kein `install.sh`, und es hat nicht einmal einen Tag), der Befehl liefert 404. Deshalb wird erst nach bestandenem Task 7 gemergt und sofort danach getaggt (Task 7, Step 6).
+
 ---
 
 ### Task 7: Prüfung von Hand auf Christians Mac
@@ -2356,7 +2699,9 @@ PATH="/private/tmp/claude-501/statusline-e2e/bin:$PATH" FAKE_LOG=/private/tmp/cl
   bash /Users/chris/Sites/claude-code-statusline/install.sh --swap
 ```
 
-Erwartet: `statusLine.command` steht auf `~/.claude/statusline.sh` (vorher `~/.claude/statusline-command.sh`), eine Sicherung `settings.json.bak-*` liegt daneben, `~/Applications/Claude Statusline Switch.app` existiert, `codesign -v ~/Applications/Claude\ Statusline\ Switch.app` meldet nichts, der Installer weist auf die gesetzte `CLAUDE_STATUSLINE_SWITCH_URL` hin.
+Erwartet: Der Installer fragt „settings.json points at another copy of this status line (~/.claude/statusline-command.sh). Switch to the managed copy …? [Y/n]", Christian antwortet Ja. Danach steht `statusLine.command` auf `~/.claude/statusline.sh`, eine Sicherung `settings.json.bak-*` liegt daneben, `~/Applications/Claude Statusline Switch.app` existiert, `codesign -v ~/Applications/Claude\ Statusline\ Switch.app` meldet nichts, und der Installer weist auf die gesetzte `CLAUDE_STATUSLINE_SWITCH_URL` hin.
+
+Die alte Kopie bleibt wie zugesagt liegen: `~/.claude/statusline/statusline.sh` (jetzt neben config, Handler und Marker im Zustandsordner) und der Symlink `~/.claude/statusline-command.sh`. Beide räumt Christian nach bestandenem Test selbst weg, der Installer tut es nie.
 
 - [ ] **Step 3: Klick simulieren**
 
@@ -2364,7 +2709,7 @@ Erwartet: `statusLine.command` steht auf `~/.claude/statusline.sh` (vorher `~/.c
 open 'claude-statusline://switch?to=cl%40koempf24.de'
 ```
 
-Erwartet: Mitteilung „Switched to Account-1 (cl@koempf24.de)", `cswap status` zeigt Konto 1. Danach mit `open 'claude-statusline://switch'` zurück rotieren und Konto 2 prüfen. Die App erscheint nicht im Dock.
+Erwartet: Mitteilung „Switched to Account-1 (cl@koempf24.de)", `cswap status` zeigt Konto 1. Erscheint keine Mitteilung, obwohl `cswap status` gewechselt hat: unter Systemeinstellungen > Mitteilungen den Eintrag für Skripteditor bzw. die App erlauben, und denselben Hinweis in die README unter Troubleshooting aufnehmen (eigener Commit). Danach mit `open 'claude-statusline://switch'` zurück rotieren und Konto 2 prüfen. Die App erscheint nicht im Dock.
 
 - [ ] **Step 4: Abweisung prüfen**
 
@@ -2384,7 +2729,19 @@ Dann eine neue Claude-Code-Session starten. Die Limit-Zeile muss jetzt `⇄` bzw
 
 In `/Users/chris/Sites/jarvis/CLAUDE.md` (Abschnitt „Konto-Swap") steht, die Statusline verlinke per `CLAUDE_STATUSLINE_SWITCH_URL` auf `/sphere?swap=1`. Den Satz ändern: Die Statusline wechselt seit 1.6.0 selbst über ihren Klick-Handler, `/sphere?swap=1` bleibt als Einstieg ins Konto-Overlay bestehen. Die Memory-Notiz `konto-swap-status.md` entsprechend anpassen. Eigener Commit im Jarvis-Repo.
 
-- [ ] **Step 6: Ergebnis festhalten**
+- [ ] **Step 6: Merge und Tag**
+
+Erst wenn Schritt 2 bis 5 bestanden sind: PR `feat/installer` nach `main` mergen, Datum im CHANGELOG prüfen (Task 6, Step 4b), dann `git -C /Users/chris/Sites/claude-code-statusline tag v1.6.0` und `git -C /Users/chris/Sites/claude-code-statusline push origin v1.6.0`. Nach dem Release-Lauf:
+
+```bash
+curl -fsSL -o /private/tmp/claude-501/install-check.sh \
+  https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh
+head -1 /private/tmp/claude-501/install-check.sh
+```
+
+Erwartet: `#!/usr/bin/env bash`.
+
+- [ ] **Step 7: Ergebnis festhalten**
 
 Ergebnis in die Daily Note (Skill `daily-notes`). Bei Abweichungen: Fehler im Branch beheben, nicht als Meldung liegen lassen.
 
@@ -2396,3 +2753,11 @@ Ergebnis in die Daily Note (Skill `daily-notes`). Bei Abweichungen: Fehler im Br
 - **Christians Link:** Der Statusline-Klick läuft künftig über den Handler, ohne Jarvis. `CLAUDE_STATUSLINE_SWITCH_URL` wird in Task 7 entfernt, die Jarvis-Doku nachgezogen.
 - **Sprache:** Alle Ausgaben englisch, keine Locale-Weiche. Steht in der Spec.
 - **Gleiche Mail in zwei Organisationen:** wird abgewiesen, Erweiterung über `&org=` steht unter „Nicht Teil davon" in der Spec.
+
+## Entscheidungen aus der Durchleuchtung (2026-10-07)
+
+- **rm-Wächter in der Test-Sandbox:** `readlink` kommt in die Sandbox, damit Christians rm-Wächter dort lauffähig bleibt. Nicht auf `/bin/rm` umbiegen, das umginge den Wächter. Eine Probe in `new_sandbox` meldet, wenn `rm` dort nicht löscht.
+- **Vorhandene `~/.claude/statusline.sh`:** Ein Symlink an dieser Stelle bleibt unangetastet (Hinweis statt Update), eine Datei wird vor dem Ersetzen als `statusline.sh.bak` gesichert.
+- **`--uninstall` nimmt `statusLine` nur heraus, wenn es auf die verwaltete Kopie zeigt**, gleich in welcher Schreibweise. Eine andere Kopie bleibt eingehängt.
+- **Abgelehnte statusLine-Fragen werden nicht gemerkt.** Wer einmal Nein sagt, wird beim nächsten Installer-Lauf wieder gefragt. Das bleibt so, damit ein späterer Wechsel möglich ist; der Installer läuft nur auf ausdrücklichen Aufruf.
+- **Mails mit Zeichen außerhalb `[A-Za-z0-9._%+~-]`** bekommen keinen Ziel-Link, `-> X` verlinkt dann auf die Rotation. Statusline und Handler erlauben dieselbe Menge.

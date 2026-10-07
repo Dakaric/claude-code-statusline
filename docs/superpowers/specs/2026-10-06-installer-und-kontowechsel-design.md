@@ -95,7 +95,8 @@ Gemeinsames Handler-Skript `~/.claude/statusline/switch-handler.sh`, aufgerufen 
 - Ein Ziel wird gegen `cswap list --json` geprüft; nur eine dort gemanagte Mail ist gültig.
   Damit kann auch eine Webseite, die das Schema aufruft, nur zwischen den eigenen Konten
   wechseln; Browser fragen bei fremden Schemata ohnehin vorher.
-- Mit Ziel `cswap switch <mail> --json`, ohne Ziel `cswap switch --json` (Rotation).
+- Mit Ziel `cswap switch <nummer> --json`, die Nummer aus `cswap list --json` (so trifft
+  der Wechsel genau das geprüfte Konto), ohne Ziel `cswap switch --json` (Rotation).
 - Ergebnis als Mitteilung: macOS per `osascript -e 'display notification …'`, Linux per
   `notify-send`, sonst Ausgabe auf stderr.
 - Der Handler bricht einen laufenden `cswap switch` nie ab (kein Timeout mit Kill), weil cswap
