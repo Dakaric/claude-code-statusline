@@ -17,7 +17,7 @@ for tool in uname osascript notify-send; do ln -s "$root/tests/fakes/$tool" "$sb
 cswap_path="$sb/with space/cswap"
 cp "$root/tests/fakes/cswap" "$cswap_path"
 jq_path=$(command -v jq)
-# shellcheck disable=SC2034,SC2329  # HANDLER_PATH, STATE_DIR und die() liest write_switch_handler
+# shellcheck disable=SC2034,SC2317,SC2329  # HANDLER_PATH, STATE_DIR und die() liest write_switch_handler
 (
   HANDLER_PATH="$sb/handler.sh"
   STATE_DIR="$sb"
