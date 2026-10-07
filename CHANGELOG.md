@@ -6,8 +6,8 @@ What changed in each release, in plain words. Newest first.
 
 ### Added
 
-- **An installer.** `curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash` downloads the latest release, checks it against `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets `statusLine` in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written first. Running it again updates. `--uninstall` removes what it added.
-- **Switch accounts with a click, no server needed.** If you use more than one Claude account, the installer sets up [claude-swap](https://github.com/realiti4/claude-swap) and a handler for `claude-statusline://` links. Cmd+click on `-> B` switches to B, on `⇄` to the next account, and a notification says where you landed. The link only shows once the handler is installed, and `CLAUDE_STATUSLINE_SWITCH_URL` still takes precedence.
+- **An installer.** `curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash` downloads the latest release, checks it against `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets `statusLine` in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written first. Running it again updates. `--uninstall` removes what it added. A script at `~/.claude/statusline.sh` that it did not create is only replaced after a yes, and every backup of your own copy gets its own timestamped name and stays after an uninstall.
+- **Switch accounts with a click, no server needed.** If you use more than one Claude account, the installer sets up [claude-swap](https://github.com/realiti4/claude-swap) and a handler for `claude-statusline://` links. Cmd+click on `-> B` switches to B, on `⇄` to the next account, and a notification says where you landed. A second click while a switch is still running is turned away. The link only shows once the handler is installed, and `CLAUDE_STATUSLINE_SWITCH_URL` still takes precedence.
 - **Each account snapshot remembers its email address**, so a click on `-> B` can name B as the target. Snapshots from older versions stay valid; until B has been used once with 1.6.0, the click rotates to the next account instead.
 
 ### Platforms
@@ -24,19 +24,19 @@ What changed in each release, in plain words. Newest first.
 
 - **No more stray `*.tmp.<pid>` files.** When Claude Code ended the status line between writing and renaming its account snapshot, the temporary file stayed behind in `~/.claude/statusline-accounts/`.
 
-## 1.4.0 — 2026-09-24
+## 1.4.0 - 2026-09-24
 
 ### Added
 
 - **The runway shows the pace it is based on.** `rw 11.9d @38/d` reads: at 38 points a day across all accounts, measured over the last 24 hours, the combined budget lasts 11.9 days. Without the pace the runway was a number you had to take on trust.
 
-## 1.3.4 — 2026-09-24
+## 1.3.4 - 2026-09-24
 
 ### Fixed
 
 - **The 5h fallback from 1.3.3 stays within its account.** When a reading could not be matched to an account, the line showed the logged-in account's five-hour window next to another account's weekly figure. It now shows no 5h segment in that case, as before. An account that never had a five-hour window no longer reads `free` either.
 
-## 1.3.3 — 2026-09-24
+## 1.3.3 - 2026-09-24
 
 ### Fixed
 
@@ -44,19 +44,19 @@ What changed in each release, in plain words. Newest first.
 - **The 5h segment no longer vanishes after the window rolls over.** Claude Code drops an expired five-hour window from the payload and reports the new one only with the session's next answer, so an idle session lost the whole segment. It now falls back to the stored snapshot, which other sessions of the same account keep current, and shows `free` when that window is over too.
 - **Accounts keep their letters.** A run that failed to read an existing snapshot rewrote it with `first_seen` set to now, and since the letters follow `first_seen`, A and B swapped places. A run that cannot read an existing snapshot now leaves it alone, and a stray empty or broken file in the folder no longer gets in the way.
 
-## 1.3.2 — 2026-09-24
+## 1.3.2 - 2026-09-24
 
 ### Fixed
 
 - **An idle account now reads `B free`, as the README shows.** The status line printed the German `frei`.
 
-## 1.3.1 — 2026-09-24
+## 1.3.1 - 2026-09-24
 
 ### Fixed
 
 - **An account that got another account's numbers now recovers by itself.** Version 1.2 filed readings under whoever was logged in, and an account damaged that way kept showing the other account's weekly figure after the update, because its stored window looked newer than its real one. Two accounts sharing the same weekly reset now count as a sign of exactly that damage, and the logged-in account's next real reading replaces the stored one.
 
-## 1.3.0 — 2026-09-24
+## 1.3.0 - 2026-09-24
 
 ### Added
 
@@ -68,19 +68,19 @@ What changed in each release, in plain words. Newest first.
 - **An older reading no longer overwrites a newer one.** With several sessions open, each reports the usage from its own last reply, so the stored value jumped back and forth. Within a window usage only grows, so the higher value wins.
 - **The runway no longer panics over nothing.** Every one of those backward jumps counted as a fresh window and its whole value as usage, so a few real points turned into two hundred and the runway showed hours instead of forever. Resets are now recognised by the reset time changing, not by the number dropping. Usage history written by older versions is ignored, so the runway reads `rw ?` for a few minutes after the update.
 
-## 1.2.1 — 2026-09-23
+## 1.2.1 - 2026-09-23
 
 ### Fixed
 
 - **The second account no longer blinks in and out.** With several sessions open, one status line could read an account file at the exact moment another one was rewriting it, and for a second the line fell back to the single-account view. Account files are now written in one step, so a reader always sees a complete one.
 
-## 1.2.0 — 2026-09-08
+## 1.2.0 - 2026-09-08
 
 ### Added
 
 - **Support for more than one Claude account.** If you rotate between subscriptions, the status line keeps track of each one and shows both at once. It notices the second account by itself, the first time you send a prompt from it. With a single account nothing changes.
-- **`rw 1.8d` — the runway.** How many days your combined budget lasts at the pace you've been going for the last 24 hours. `rw oo` means you're spending less than the accounts refill, so you won't run out at all.
-- **`-> B` — when to switch accounts.** It appears when the account you're in is used up, or when budget is about to expire in another one and would otherwise go to waste. The numbers behind the advice are on the same line, so you can check it.
+- **`rw 1.8d`: the runway.** How many days your combined budget lasts at the pace you've been going for the last 24 hours. `rw oo` means you're spending less than the accounts refill, so you won't run out at all.
+- **`-> B`: when to switch accounts.** It appears when the account you're in is used up, or when budget is about to expire in another one and would otherwise go to waste. The numbers behind the advice are on the same line, so you can check it.
 - **Worktree and effort.** The status line now shows which git worktree you're in and which reasoning effort level is set.
 
 ### Changed
@@ -99,14 +99,14 @@ What changed in each release, in plain words. Newest first.
 
 - A test suite with a fixed clock, so the time-based parts can be checked without waiting for real hours to pass, and a check that runs on every push instead of only at release time.
 
-## 1.1.1 — 2026-08-05
+## 1.1.1 - 2026-08-05
 
 ### Fixed
 
 - **Percentages showed as 0** on systems that use a comma as the decimal separator, which is most of continental Europe.
 - The cache segment said `kalt` in German while everything around it was English. It now says `cold`.
 
-## 1.1.0 — 2026-08-05
+## 1.1.0 - 2026-08-05
 
 ### Fixed
 
@@ -121,6 +121,6 @@ What changed in each release, in plain words. Newest first.
 
 - A troubleshooting section in the README for the questions that came up most.
 
-## 1.0.0 — 2026-06-27
+## 1.0.0 - 2026-06-27
 
 First public release. Directory, git branch and model on one line; context window bar, 5-hour and weekly rate limits, daily pacing and prompt-cache countdown on the other. Everything appears only when there is something to show.

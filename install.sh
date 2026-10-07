@@ -637,7 +637,7 @@ register_macos_app() {
   applescript_source > "$script" || return 1
   mkdir -p "$HOME/Applications" || return 1
   if ! app_path_allowed; then
-    warn "click-to-switch needs ~/Applications to be a real folder, and $APP_PATH to be a folder or missing, not a link or a file"
+    warn "click-to-switch needs ~/Applications to be a real folder, and $APP_PATH to be a folder or missing, not a link or a file. Remove or rename it, then run the installer again."
     return 1
   fi
   safe_remove_tree "$APP_PATH"
