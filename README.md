@@ -13,7 +13,7 @@
 
 A drop-in status line for [Claude Code](https://claude.com/claude-code) that puts everything you actually glance at on **two tidy lines**: where you are and what you're running up top, and every live metric — context window, prompt-cache TTL, rate limits and weekly pacing — underneath.
 
-A single `bash` script, one `jq` pass per refresh. No daemon, no config file, no dependencies beyond `jq`.
+A single `bash` script, one `jq` pass per refresh. No daemon, nothing to configure. The status line itself needs only `jq`; the installer and click-to-switch need a few more tools, listed under [Requirements](#requirements).
 
 > Unofficial. Not affiliated with or endorsed by Anthropic. It reads the JSON that Claude Code already pipes to its status line command — nothing else.
 
@@ -56,7 +56,7 @@ The split is the point. The first two lines barely change within a session, the 
 | Weekly Opus | `wk-opus 7%` | when present |
 | Daily pacing | `d +6% (3.2d)` | with one known account |
 | Runway | `rw 2.4d @52/d`, `rw oo @20/d +8/d` | with two or more known accounts |
-| Account switch | `-> B` | when another account is the better place to work |
+| Account switch | `-> B`, `⇄` | `-> B` when another account is the better place to work; both are links once click-to-switch is set up |
 | Context window | `ctx ███░░░░░░░ 28% (280k/1M)` | progress bar, green → yellow → red as it fills |
 
 Every percentage colours itself: green under 50%, yellow from 50%, red from 80%.
@@ -107,9 +107,15 @@ Accounts are labelled `A`, `B`, `C` in the order they were first seen. The UUID 
 
 The numbers behind the hint are on the line, so you can check it rather than trust it. To forget an account you logged into by accident, delete its `.json` and `.history` from `~/.claude/statusline-accounts/`.
 
-#### Click-through link to switch accounts
+#### Switch accounts with a click
 
-Set `CLAUDE_STATUSLINE_SWITCH_URL` and the limits line ends in a link: the switch hint `-> B` when the status line recommends a switch, otherwise a `⇄`. Open it with Cmd+click in a terminal that supports OSC 8 hyperlinks. Set the variable in `~/.claude/settings.json`:
+With more than one account, the end of the limits line can be a link: `-> B` when the status line recommends a switch, otherwise `⇄`. Cmd+click (Ctrl+click in most Linux terminals) switches right away, `-> B` to account B and `⇄` to the next account in line, and a notification tells you where you landed. Your terminal needs to support OSC 8 hyperlinks.
+
+The switching itself is done by [claude-swap](https://github.com/realiti4/claude-swap) (`cswap`). The installer sets it up when you tell it you use more than one account: it installs `cswap` with `uv` or `pipx`, adds the account you are logged into, and registers a handler for `claude-statusline://` links, a small app in `~/Applications` on macOS and a desktop entry on Linux. On macOS the app is only built when `~/Applications` is a real folder, not a symlink; otherwise the installer warns and leaves click-to-switch off. To add another account, run `/login` in Claude Code without logging out first, then `cswap add`.
+
+The link only appears once that handler is installed, so the line never shows a link that does nothing. The handler only switches between accounts `cswap` already manages and ignores every other address. The Linux handler is tested in CI, not yet on a real desktop.
+
+To send the click somewhere else, for example your own dashboard, set `CLAUDE_STATUSLINE_SWITCH_URL` in `~/.claude/settings.json`. It takes precedence over the handler:
 
     "env": { "CLAUDE_STATUSLINE_SWITCH_URL": "http://localhost:7373/sphere?swap=1" }
 
@@ -122,7 +128,31 @@ If you run a token-optimizer plugin that scores context health, its `UserPromptS
 ## Install
 
 ```bash
-# 1. Drop the script anywhere on disk
+curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash
+```
+
+The installer downloads the latest release, checks it against the release's `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets the `statusLine` entry in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written next to it first. If `statusLine` already points at another script, it asks before replacing it.
+
+It also asks whether you use more than one Claude account. Say yes and it sets up [click-to-switch](#switch-accounts-with-a-click). Your answer is kept in `~/.claude/statusline/config`, so an update doesn't ask again.
+
+Run the same command again to update. Options go after `bash -s --`:
+
+```bash
+curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash -s -- --yes
+```
+
+| Option | Effect |
+|--------|--------|
+| `--yes` | answer every question with its default |
+| `--swap`, `--no-swap` | turn click-to-switch on or off, whatever you answered before |
+| `--version v1.6.0` | install that release instead of the latest |
+| `--uninstall` | remove what the installer added |
+
+macOS and Linux are supported. Windows is not supported yet.
+
+### Install by hand
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/Dakaric/claude-code-statusline/main/statusline.sh \
   -o ~/.claude/statusline.sh
 chmod +x ~/.claude/statusline.sh
@@ -138,14 +168,14 @@ Then wire it up in `~/.claude/settings.json` (create the file if it doesn't exis
 }
 ```
 
-The next Claude Code session picks it up. That's the whole install.
+The next Claude Code session picks it up.
 
 ### Pin to a release
 
 `main` is the rolling latest. To pin a known version instead, grab it from the [Releases](https://github.com/Dakaric/claude-code-statusline/releases) page — every release ships the script and a `SHA256SUMS` file:
 
 ```bash
-ver=v1.4.0
+ver=v1.6.0
 base=https://github.com/Dakaric/claude-code-statusline/releases/download/$ver
 curl -fsSL "$base/statusline.sh" -o ~/.claude/statusline.sh
 curl -fsSL "$base/SHA256SUMS"   -o /tmp/SHA256SUMS
@@ -164,6 +194,8 @@ Check which version you have any time with `statusline.sh --version`.
 - `bash` — any modern version
 - `jq` — `brew install jq` (macOS) or `apt install jq` (Debian/Ubuntu)
 - A terminal with ANSI colour and basic Unicode (block characters for the progress bar)
+- `curl` for the installer
+- For click-to-switch: `uv` or `pipx` (the installer offers to install `uv` if neither is there), and on Linux `xdg-utils`
 
 ## Troubleshooting
 
@@ -263,19 +295,25 @@ The version lives in one place — the `VERSION` line at the top of `statusline.
 
 ```bash
 # 1. bump VERSION="x.y.z" in statusline.sh, commit it
-# 2. add a "## x.y.z — YYYY-MM-DD" section to CHANGELOG.md, commit it
+# 2. add a "## x.y.z - YYYY-MM-DD" section to CHANGELOG.md, commit it
 # 3. tag and push
 git tag vx.y.z
 git push origin vx.y.z
 ```
 
-The push triggers [`release.yml`](.github/workflows/release.yml), which **fails the build if the tag doesn't match `VERSION`** or if [`CHANGELOG.md`](CHANGELOG.md) has no section for that version, runs `shellcheck` and the test suite, generates `SHA256SUMS`, and publishes a GitHub Release with the script and checksum attached. So the tag, the script and the release notes can never drift apart.
+The push triggers [`release.yml`](.github/workflows/release.yml), which **fails the build if the tag doesn't match `VERSION`** or if [`CHANGELOG.md`](CHANGELOG.md) has no section for that version, runs `shellcheck` and the test suite, generates `SHA256SUMS`, and publishes a GitHub Release with the script, the installer and their checksums attached. So the tag, the script and the release notes can never drift apart.
 
 The release notes are the changelog section, written for people who just want to know what changed — not a list of commit subjects.
 
 ## Uninstall
 
-Remove the `statusLine` entry from `~/.claude/settings.json` (or restore your previous one) and delete the script.
+```bash
+curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash -s -- --uninstall
+```
+
+This removes the script, the click handler, the stored answers and the `statusLine` entry if it points at this status line. `cswap` and its accounts stay; remove them with `cswap purge` and `uv tool uninstall claude-swap`. The usage history in `~/.claude/statusline-accounts/` stays too, delete the folder if you no longer need it.
+
+Installed by hand? Remove the `statusLine` entry from `~/.claude/settings.json` and delete the script.
 
 ## License
 

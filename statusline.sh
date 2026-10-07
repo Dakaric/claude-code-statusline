@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.5.0"
+VERSION="1.6.0"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).

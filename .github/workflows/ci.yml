@@ -14,7 +14,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint with shellcheck
-        run: shellcheck -x statusline.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/branch.sh tests/freeze.sh tests/fixture-env.sh tests/setup/*.sh
+        run: shellcheck -x statusline.sh install.sh tests/run.sh tests/race.sh tests/forks.sh tests/snapshots.sh tests/branch.sh tests/freeze.sh tests/fixture-env.sh tests/install.sh tests/handler.sh tests/extract-handler.sh tests/setup/*.sh tests/fakes/*
+
+      - name: Lint the embedded click handler
+        run: |
+          bash tests/extract-handler.sh > "$RUNNER_TEMP/switch-handler.sh"
+          shellcheck "$RUNNER_TEMP/switch-handler.sh"
 
       - name: Run tests
         run: bash tests/run.sh
@@ -30,3 +35,9 @@ jobs:
 
       - name: Run branch test
         run: bash tests/branch.sh
+
+      - name: Run installer test
+        run: bash tests/install.sh
+
+      - name: Run click handler test
+        run: bash tests/handler.sh

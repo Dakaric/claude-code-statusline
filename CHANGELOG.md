@@ -2,6 +2,18 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.6.0 - YYYY-MM-DD
+
+### Added
+
+- **An installer.** `curl -fsSL https://github.com/Dakaric/claude-code-statusline/releases/latest/download/install.sh | bash` downloads the latest release, checks it against `SHA256SUMS`, puts it at `~/.claude/statusline.sh` and sets `statusLine` in `~/.claude/settings.json`. Every other setting stays as it is, and a backup of the file is written first. Running it again updates. `--uninstall` removes what it added.
+- **Switch accounts with a click, no server needed.** If you use more than one Claude account, the installer sets up [claude-swap](https://github.com/realiti4/claude-swap) and a handler for `claude-statusline://` links. Cmd+click on `-> B` switches to B, on `⇄` to the next account, and a notification says where you landed. The link only shows once the handler is installed, and `CLAUDE_STATUSLINE_SWITCH_URL` still takes precedence.
+- **Each account snapshot remembers its email address**, so a click on `-> B` can name B as the target. Snapshots from older versions stay valid; until B has been used once with 1.6.0, the click rotates to the next account instead.
+
+### Platforms
+
+- macOS and Linux. The Linux link handler is tested in CI, not yet on a real desktop. Windows is not supported yet.
+
 ## 1.5.0 - 2026-10-06
 
 ### Added
