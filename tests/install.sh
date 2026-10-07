@@ -6,12 +6,12 @@
 # ein Test im Terminal hinge.
 set -u
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 failed=0
 sb=""
 home=""
 # Alle Sandboxen dieses Laufs liegen unter einem Ordner. drop_sandbox löscht nur dort.
-run_root=$(mktemp -d)
+run_root=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$run_root"' EXIT
 
 # rm kann auf dem Entwicklerrechner ein Löschwächter sein, der seinen Ort mit readlink -f
@@ -30,7 +30,7 @@ sha256_line() {
 
 new_sandbox() {
   local tool real
-  sb=$(mktemp -d "$run_root/sb.XXXXXX")
+  sb=$(mktemp -d "$run_root/sb.XXXXXX") || exit 1
   home="$sb/home"
   mkdir -p "$home" "$sb/bin" "$sb/tmp" "$sb/release" "$sb/cswap"
   for tool in $real_tools; do
@@ -158,8 +158,10 @@ check_settings_mode_kept() {
   mkdir -p "$home/.claude"
   printf '{"env":{"TOKEN":"x"}}\n' > "$home/.claude/settings.json"
   chmod 600 "$home/.claude/settings.json"
-  run_installer
-  if [ -z "$(find "$home/.claude/settings.json" -perm 600)" ]; then
+  if ! run_installer; then fail "Installer endet mit Fehler"
+  elif ! jq -e '.statusLine.command == "~/.claude/statusline.sh" and .env.TOKEN == "x"' \
+      "$home/.claude/settings.json" >/dev/null; then fail "settings.json nicht geschrieben oder Token verloren"
+  elif [ -z "$(find "$home/.claude/settings.json" -perm 600)" ]; then
     fail "settings.json hat ihre Rechte 600 verloren"
   else ok "Rechte von settings.json bleiben"
   fi
@@ -300,8 +302,10 @@ check_home_guard() {
   local bad before=$failed
   new_sandbox
   for bad in "" "/" "relativ/pfad" "//" "/.."; do
-    if env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" \
-        FAKE_RELEASE_DIR="$sb/release" "$BASH" "$root/install.sh" --yes < /dev/null > "$sb/out" 2>&1; then
+    # Im Sandbox-Ordner gestartet: ein Rückfall des Wächters mit relativem HOME legt seine
+    # Dateien hier an und nicht im Checkout.
+    if (cd "$sb" && env -i HOME="$bad" TMPDIR="$sb/tmp" PATH="$sb/bin" FAKE_LOG="$sb/log" \
+        FAKE_RELEASE_DIR="$sb/release" "$BASH" "$root/install.sh" --yes < /dev/null > "$sb/out" 2>&1); then
       fail "HOME='$bad' wird angenommen"
     elif ! grep -q 'HOME must' "$sb/out"; then
       fail "HOME='$bad': Abbruch nicht durch den HOME-Wächter"
@@ -315,14 +319,51 @@ check_home_guard() {
 # Statischer Wächter: rekursives Löschen gibt es nur an einer Stelle, in safe_remove_tree.
 check_single_recursive_delete() {
   local count others
-  count=$(grep -c 'rm -rf' "$root/install.sh")
-  others=$(grep -nE 'rm -r[^f]|rm -fr|rm -Rf|find .*-delete|rmtree' "$root/install.sh")
+  count=$(grep -cE 'rm[[:space:]]+(-[a-zA-Z]*[rR]|--recursive)' "$root/install.sh")
+  others=$(grep -nE 'find .*-delete|rmtree' "$root/install.sh")
   if [ "$count" != 1 ] || [ -n "$others" ]; then
     printf 'FEHLER install rekursives Löschen an %s Stellen\n%s\n' "$count" "$others"
     failed=1
   else
     printf 'ok     install (rekursives Löschen nur in safe_remove_tree)\n'
   fi
+}
+
+# TMP_DIR ist die Positivliste von safe_remove_tree. Nach make_tmp_dir darf eine
+# Zuweisung sie nicht mehr verbiegen können. Die Bibliothek ist install.sh ohne die
+# letzte Zeile, so läuft keine main.
+check_tmp_dir_readonly() {
+  new_sandbox
+  mkdir -p "$sb/other"
+  : > "$sb/other/sentinel"
+  sed '$d' "$root/install.sh" > "$sb/lib.sh"
+  cat > "$sb/probe.sh" <<PROBE
+. "$sb/lib.sh"
+init_paths
+make_tmp_dir
+( TMP_DIR="$sb/other" ) 2>/dev/null
+rc=\$?
+[ "\$rc" != 0 ] || ( safe_remove_tree "$sb/other" ) 2>/dev/null
+exit "\$rc"
+PROBE
+  if env -i HOME="$home" TMPDIR="$sb/tmp" PATH="$sb/bin" "$BASH" "$sb/probe.sh" > "$sb/out" 2>&1; then fail "TMP_DIR lässt sich nach make_tmp_dir neu zuweisen"
+  elif [ ! -e "$sb/other/sentinel" ]; then fail "fremder Ordner wurde gelöscht"
+  else ok "TMP_DIR ist nach make_tmp_dir schreibgeschützt"
+  fi
+  drop_sandbox
+}
+
+# Ein Ordner an der Stelle der verwalteten Kopie darf nicht dazu führen, dass mv die Datei
+# hineinschiebt.
+check_statusline_is_directory() {
+  new_sandbox
+  mkdir -p "$home/.claude/statusline.sh"
+  if run_installer; then fail "Ordner statt statusline.sh endet ohne Fehler"
+  elif ! grep -q 'is not a regular file' "$sb/out"; then fail "kein Hinweis auf den Ordner"
+  elif [ -e "$home/.claude/statusline.sh/statusline.sh" ]; then fail "Datei in den Ordner geschoben"
+  else ok "Ordner statt statusline.sh bricht ab"
+  fi
+  drop_sandbox
 }
 
 check_fresh_install
@@ -340,5 +381,7 @@ check_release_tag
 check_windows_refused
 check_jq_missing
 check_home_guard
+check_tmp_dir_readonly
+check_statusline_is_directory
 check_single_recursive_delete
 exit "$failed"

@@ -144,7 +144,7 @@ ask_yes_no() {
 }
 
 # --- Antworten merken ---
-# Eine schluessel=wert-Zeile je Einstellung. Gelesen wird zeilenweise, nie per source:
+# Eine Schlüssel=Wert-Zeile je Einstellung. Gelesen wird zeilenweise, nie per source:
 # die Datei ist Text, kein Code.
 config_get() {
   local line
@@ -176,7 +176,7 @@ config_set() {
 # Rekursiv gelöscht wird nur das eigene mktemp -d dieses Laufs und genau der App-Pfad.
 # Verglichen wird der aufgelöste Pfad: ein Symlink, auf dem Weg oder am Ende, darf das
 # Löschen nicht nach außen umlenken. Alles andere bricht ab, statt zu löschen.
-resolve_dir() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+resolve_dir() { (CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P); }
 
 safe_remove_tree() {
   local path=$1 resolved home_resolved allowed_tmp=""
@@ -195,6 +195,9 @@ safe_remove_tree() {
 make_tmp_dir() {
   TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-statusline.XXXXXX") \
     || die "cannot create a temporary directory"
+  # Schreibgeschützt: TMP_DIR ist die Positivliste von safe_remove_tree, eine spätere
+  # Zuweisung dürfte sie nicht auf einen anderen Ordner umbiegen.
+  readonly TMP_DIR
   trap 'safe_remove_tree "$TMP_DIR"' EXIT
 }
 
@@ -241,6 +244,9 @@ install_statusline() {
   if [ -L "$STATUSLINE_PATH" ]; then
     warn "$STATUSLINE_PATH is a symlink, left it alone. Update its target yourself, or remove the link and run the installer again."
     return 0
+  fi
+  if [ -e "$STATUSLINE_PATH" ] && [ ! -f "$STATUSLINE_PATH" ]; then
+    die "$STATUSLINE_PATH is not a regular file. Move it away and run the installer again."
   fi
   # Eine vorhandene Datei kann von Hand angepasst sein. Sie wird gesichert, die Sicherung
   # des vorigen Laufs dabei ersetzt.
