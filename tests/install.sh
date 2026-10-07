@@ -196,14 +196,14 @@ check_empty_settings() {
   drop_sandbox
 }
 
-# Eine vorhandene verwaltete Kopie wird vor dem Ersetzen gesichert; ein Symlink an ihrer
-# Stelle (etwa in einen Checkout) bleibt unangetastet.
+# Eine eigene, abgewandelte Kopie (mit Signatur) wird vor dem Ersetzen gesichert; ein
+# Symlink an ihrer Stelle (etwa in einen Checkout) bleibt unangetastet.
 check_existing_statusline_backed_up() {
   new_sandbox
   mkdir -p "$home/.claude"
-  printf '# angepasst\n' > "$home/.claude/statusline.sh"
+  printf '# claude-code-statusline v0.0.1 angepasst\n' > "$home/.claude/statusline.sh"
   run_installer
-  if [ "$(cat "$home/.claude/statusline.sh.bak" 2>/dev/null)" != '# angepasst' ]; then
+  if [ "$(cat "$home"/.claude/statusline.sh.bak-* 2>/dev/null)" != '# claude-code-statusline v0.0.1 angepasst' ]; then
     fail "vorhandene statusline.sh nicht gesichert"
   elif ! cmp -s "$home/.claude/statusline.sh" "$root/statusline.sh"; then fail "statusline.sh nicht ersetzt"
   else ok "vorhandene statusline.sh wird gesichert"
@@ -495,6 +495,65 @@ PROBE
   if env -i HOME="$home" TMPDIR="$sb/tmp" PATH="$sb/bin" "$BASH" "$sb/probe.sh" > "$sb/out" 2>&1; then fail "TMP_DIR lässt sich nach make_tmp_dir neu zuweisen"
   elif [ ! -e "$sb/other/sentinel" ]; then fail "fremder Ordner wurde gelöscht"
   else ok "TMP_DIR ist nach make_tmp_dir schreibgeschützt"
+  fi
+  drop_sandbox
+}
+
+# Eine fremde Datei am verwalteten Pfad (ohne Signatur) wird nie ersetzt: Vorgabe der
+# Rückfrage ist Nein, settings.json bleibt, und der Swap-Teil läuft trotzdem.
+check_foreign_script_at_managed_path_kept() {
+  new_sandbox
+  mkdir -p "$home/.claude"
+  printf '#!/bin/sh\necho meins\n' > "$home/.claude/statusline.sh"
+  printf '{"theme":"dark"}\n' > "$home/.claude/settings.json"
+  cp "$home/.claude/statusline.sh" "$sb/foreign.sh"
+  cp "$home/.claude/settings.json" "$sb/original.json"
+  if ! run_installer --no-swap; then fail "fremdes Skript am verwalteten Pfad führt zum Abbruch"
+  elif ! cmp -s "$home/.claude/statusline.sh" "$sb/foreign.sh"; then fail "fremdes Skript wurde ersetzt"
+  elif ! cmp -s "$home/.claude/settings.json" "$sb/original.json"; then fail "settings.json wurde verändert"
+  elif [ -n "$(ls "$home"/.claude/statusline.sh.bak* 2>/dev/null)" ]; then fail "es wurde gesichert statt gefragt"
+  elif ! grep -q 'did not create' "$sb/out"; then fail "kein Hinweis auf die fremde Datei"
+  elif [ "$(config_value swap)" != off ]; then fail "Swap-Teil lief nicht"
+  else ok "fremdes Skript am verwalteten Pfad bleibt bei --yes"
+  fi
+  drop_sandbox
+}
+
+# Der Wert eines Schlüssels aus der Installer-Konfiguration der Sandbox.
+config_value() {
+  sed -n "s/^$1=//p" "$home/.claude/statusline/config" 2>/dev/null
+}
+
+# Sicherungen werden nie überschrieben: zwei Updates hintereinander lassen beide Stände
+# liegen, und --uninstall räumt sie nicht weg, sondern nennt ihren Ort.
+check_backups_survive_update_and_uninstall() {
+  local count
+  new_sandbox
+  mkdir -p "$home/.claude"
+  printf '# claude-code-statusline v0.0.1 eins\n' > "$home/.claude/statusline.sh"
+  run_installer --no-swap
+  printf '# claude-code-statusline v0.0.2 zwei\n' > "$home/.claude/statusline.sh"
+  run_installer --no-swap
+  count=$(cat "$home"/.claude/statusline.sh.bak-* 2>/dev/null | grep -c 'eins\|zwei')
+  run_installer --uninstall
+  if [ "$count" != 2 ]; then fail "nach zwei Updates sind nicht beide Stände gesichert ($count)"
+  elif [ "$(cat "$home"/.claude/statusline.sh.bak-* 2>/dev/null | grep -c 'eins\|zwei')" != 2 ]; then
+    fail "--uninstall hat Sicherungen gelöscht"
+  elif ! grep -q 'statusline.sh.bak-' "$sb/out"; then fail "--uninstall nennt die Sicherungen nicht"
+  else ok "Sicherungen überleben Update und --uninstall"
+  fi
+  drop_sandbox
+}
+
+# --uninstall löscht ein fremdes Skript am verwalteten Pfad nicht.
+check_uninstall_keeps_foreign_script() {
+  new_sandbox
+  mkdir -p "$home/.claude"
+  printf '#!/bin/sh\necho meins\n' > "$home/.claude/statusline.sh"
+  cp "$home/.claude/statusline.sh" "$sb/foreign.sh"
+  run_installer --uninstall
+  if ! cmp -s "$home/.claude/statusline.sh" "$sb/foreign.sh"; then fail "--uninstall löscht fremdes Skript"
+  else ok "--uninstall lässt ein fremdes Skript am verwalteten Pfad stehen"
   fi
   drop_sandbox
 }
@@ -860,6 +919,9 @@ check_settings_mode_kept
 check_settings_symlink_kept
 check_empty_settings
 check_existing_statusline_backed_up
+check_foreign_script_at_managed_path_kept
+check_backups_survive_update_and_uninstall
+check_uninstall_keeps_foreign_script
 check_bad_checksum_keeps_old_file
 check_missing_checksum_line_fails
 check_invalid_settings_aborts

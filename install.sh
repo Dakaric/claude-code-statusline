@@ -229,6 +229,34 @@ expected_sum() {
   awk -v f="$2" '$2 == f || $2 == ("*" f) { print $1; exit }' "$1"
 }
 
+# Trägt eine Datei die Versionskennung dieses Projekts? Ohne sie ist sie fremd.
+has_statusline_signature() {
+  grep -q 'claude-code-statusline v' "$1" 2>/dev/null
+}
+
+# Ein fremdes Skript am verwalteten Pfad ersetzt der Installer nur nach ausdrücklichem Ja.
+# Bei Nein bleibt alles, wie es ist, und der Aufrufer lässt die Statusline aus.
+confirm_replacing_foreign_script() {
+  if ask_yes_no "$STATUSLINE_PATH is a file this installer did not create. Back it up and replace it?" n; then
+    return 0
+  fi
+  info "$STATUSLINE_PATH is a file this installer did not create, so it was left alone and settings.json is unchanged."
+  info "To install the status line, move that file away (for example: mv $STATUSLINE_PATH $STATUSLINE_PATH.old) and run the installer again."
+  return 1
+}
+
+# Jede Sicherung bekommt einen eigenen Namen mit Zeitstempel und überschreibt nie eine
+# frühere. Bei gleicher Sekunde hängt ein Zähler an.
+back_up_statusline() {
+  local backup="$STATUSLINE_PATH.bak-$(date +%Y%m%d-%H%M%S)" counter=1
+  while [ -e "$backup" ] || [ -L "$backup" ]; do
+    backup="$STATUSLINE_PATH.bak-$(date +%Y%m%d-%H%M%S)-$counter"
+    counter=$((counter + 1))
+  done
+  cp -p "$STATUSLINE_PATH" "$backup" || die "cannot back up $STATUSLINE_PATH"
+  info "Saved your previous $STATUSLINE_PATH as $backup"
+}
+
 install_statusline() {
   local new="$TMP_DIR/statusline.sh" sums="$TMP_DIR/SHA256SUMS" want got staged
   command -v curl >/dev/null 2>&1 || die "curl is required"
@@ -248,11 +276,11 @@ install_statusline() {
   if [ -e "$STATUSLINE_PATH" ] && [ ! -f "$STATUSLINE_PATH" ]; then
     die "$STATUSLINE_PATH is not a regular file. Move it away and run the installer again."
   fi
-  # Eine vorhandene Datei kann von Hand angepasst sein. Sie wird gesichert, die Sicherung
-  # des vorigen Laufs dabei ersetzt.
+  if [ -f "$STATUSLINE_PATH" ] && ! has_statusline_signature "$STATUSLINE_PATH"; then
+    confirm_replacing_foreign_script || return 1
+  fi
   if [ -f "$STATUSLINE_PATH" ] && ! cmp -s "$new" "$STATUSLINE_PATH"; then
-    cp -p "$STATUSLINE_PATH" "$STATUSLINE_PATH.bak" || die "cannot back up $STATUSLINE_PATH"
-    info "Saved your previous $STATUSLINE_PATH as $STATUSLINE_PATH.bak"
+    back_up_statusline
   fi
   staged="$CLAUDE_DIR/.statusline.sh.new.$$"
   if ! { cp "$new" "$staged" && chmod 755 "$staged" && mv -f "$staged" "$STATUSLINE_PATH"; }; then
@@ -291,7 +319,7 @@ command_path() {
 points_to_this_statusline() {
   local path
   path=$(command_path "$1") || return 1
-  [ -f "$path" ] && grep -q 'claude-code-statusline v' "$path" 2>/dev/null
+  [ -f "$path" ] && has_statusline_signature "$path"
 }
 
 # Zeigt ein Befehl auf die verwaltete Kopie, gleich ob mit Tilde, absolut oder über einen
@@ -711,6 +739,32 @@ setup_swap() {
 }
 
 # --- Deinstallation ---
+# Liegt am verwalteten Pfad eine reguläre Datei ohne die Versionskennung, gehört sie dem
+# Anwender und nicht dem Installer.
+managed_copy_is_foreign() {
+  [ -f "$STATUSLINE_PATH" ] && ! has_statusline_signature "$STATUSLINE_PATH"
+}
+
+# Nur die verwaltete Kopie hat der Installer eingehängt, also nimmt er nur sie heraus.
+# is_managed_command braucht die Datei, deshalb steht das vor dem Löschen.
+unhook_managed_statusline() {
+  if is_managed_command "$1"; then
+    write_settings 'del(.statusLine)'
+    info "Removed statusLine from $SETTINGS_PATH."
+  elif [ -n "$1" ] && points_to_this_statusline "$1"; then
+    info "statusLine still points at your other copy ($1). It was left in place."
+  fi
+}
+
+# Sicherungen gehören dem Anwender: --uninstall löscht sie nie, sondern nennt sie.
+report_statusline_backups() {
+  local backup
+  for backup in "$STATUSLINE_PATH".bak-*; do
+    [ -e "$backup" ] && info "Kept your backup $backup"
+  done
+  return 0
+}
+
 # cswap und seine Konten bleiben: sie gehören einem eigenen Werkzeug, das auch ohne diese
 # Statusline nützt. Die Verbrauchshistorie in statusline-accounts bleibt ebenfalls.
 uninstall() {
@@ -718,17 +772,15 @@ uninstall() {
   remove_switch_handler
   rm -f "$CONFIG_PATH"
   current=$(current_statusline_command)
-  # Nur die verwaltete Kopie hat der Installer eingehängt, also nimmt er nur sie heraus.
-  # is_managed_command braucht die Datei, deshalb steht das vor dem Löschen.
-  if is_managed_command "$current"; then
-    write_settings 'del(.statusLine)'
-    info "Removed statusLine from $SETTINGS_PATH."
-  elif [ -n "$current" ] && points_to_this_statusline "$current"; then
-    info "statusLine still points at your other copy ($current). It was left in place."
+  if managed_copy_is_foreign; then
+    info "$STATUSLINE_PATH is not a file this installer created. It and statusLine were left in place."
+  else
+    unhook_managed_statusline "$current"
+    rm -f "$STATUSLINE_PATH"
   fi
-  rm -f "$STATUSLINE_PATH" "$STATUSLINE_PATH.bak"
   rmdir "$STATE_DIR" 2>/dev/null
   info "Removed claude-code-statusline."
+  report_statusline_backups
   info "cswap and its accounts were kept. To remove them: cswap purge, then uv tool uninstall claude-swap (or pipx uninstall claude-swap)"
   info "Usage history stays in $CLAUDE_DIR/statusline-accounts. Delete that folder if you no longer need it."
 }
@@ -746,8 +798,9 @@ main() {
   fi
   init_prompt
   make_tmp_dir
-  install_statusline
-  wire_settings
+  # Eine fremde Datei am verwalteten Pfad bleibt, dann auch settings.json. Der Swap-Teil
+  # hängt nicht an der Statusline-Datei und läuft trotzdem.
+  if install_statusline; then wire_settings; fi
   setup_swap
   info "Done. Start a new Claude Code session to see the status line."
 }
