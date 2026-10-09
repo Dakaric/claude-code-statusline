@@ -48,7 +48,7 @@ The split is the point. The first two lines barely change within a session, the 
 | Effort | `effort high` | when the model supports the reasoning-effort parameter |
 | Prompt-cache | `cache 47m12s/1h` | always: time left before the prompt cache goes cold, over the TTL |
 | Vim mode | `[NORMAL]` | when vim mode is enabled |
-| Context quality | `ctxQ A(92)` | when a token-optimizer score exists for the session |
+| Context quality | `ctxQ A(92)`, `ctxQ …` | when the payload has a transcript: the score once a token-optimizer has written one, a dimmed placeholder until then |
 | 5h limit | `5h 42% (1h58m)` | when present: percentage used + time left until reset |
 | Weekly | `wk 18%` | when present |
 | Weekly Opus | `wk-opus 7%` | when present |
@@ -123,7 +123,7 @@ The URL needs a scheme and must not contain whitespace or backslashes, otherwise
 
 ### `ctxQ A(92)`: context quality
 
-If you run a token-optimizer plugin that scores context health, its `UserPromptSubmit` hook writes a grade to `~/.claude/token-optimizer/quality-cache-<session>.json` every couple of minutes. The segment surfaces that grade and score (`A(92)`), coloured green/yellow/orange/red by band. No file, no segment: it stays out of the way.
+If you run a token-optimizer plugin that scores context health, its `UserPromptSubmit` hook writes a grade to `~/.claude/token-optimizer/quality-cache-<session>.json` every couple of minutes. The segment surfaces that grade and score (`A(92)`), coloured green/yellow/orange/red by band. Until a score file exists, the segment shows a dimmed `ctxQ …` placeholder. Without the plugin it stays that way; see [below](#ctxq-sits-at--forever).
 
 ## Install
 
@@ -232,7 +232,7 @@ The placeholder means "no score written yet". The `ctxQ` segment reads a file th
 ls -la ~/.claude/token-optimizer/
 ```
 
-No plugin, no score. Drop the `seg_ctxq` block from `line2` if you don't use one.
+No plugin, no score. Drop `"$seg_ctxq"` from the `line3` join if you don't use one.
 
 ### The `agt` and `skl` counters are gone
 
