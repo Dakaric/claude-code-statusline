@@ -107,7 +107,10 @@ The numbers behind the hint are on the line, so you can check it rather than tru
 
 #### Switch accounts with a click
 
-With more than one account, the end of the limits line can be a link: `-> B` when the status line recommends a switch, otherwise `⇄`. Cmd+click (Ctrl+click in most Linux terminals) switches right away, `-> B` to account B and `⇄` to the next account in line, and a notification tells you where you landed. Your terminal needs to support OSC 8 hyperlinks.
+With more than one account, the end of the limits line can be a link: `-> B` when the status line recommends a switch, otherwise `⇄`. Cmd+click (Ctrl+click in most Linux terminals) switches right away, `-> B` to account B and `⇄` to the next account in line, and a notification tells you where you landed. Your terminal needs to support OSC 8 hyperlinks and pass links with their own URL scheme on to the operating system.
+
+> [!NOTE]
+> Clicking works in cmux and Terminal.app. Orca doesn't support it yet: it only opens `http(s):` and `file:` links and drops the click without a message. Orca is tracking this in [stablyai/orca#13225](https://github.com/stablyai/orca/issues/13225), and a fix is in review in [#13237](https://github.com/stablyai/orca/pull/13237). Until it ships, switch with `cswap switch` in Orca.
 
 A second click while a switch is still running is turned away. If a switch was interrupted for good (the process was killed or the machine lost power), the next click says so and does nothing: check your account with `cswap` in a terminal, then delete `~/.claude/statusline/switch.lock` and click again.
 
