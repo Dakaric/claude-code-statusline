@@ -71,6 +71,8 @@ It reads `47m12s/1h` → `12m03s/1h` → `2m41s/1h` → `cold`. Cyan while there
 
 The five-hour rate limit shows both the percentage used **and** how long until it resets, read from `resets_at` in the payload. Under an hour it collapses to minutes (`(42m)`). You can see at a glance whether to push on or wait it out.
 
+The segment only shows while a five-hour window is running. Once it has expired, or on a plan that has no five-hour limit at all, the line starts straight with `wk`. With several accounts the same goes for the others: `B 40%` is listed only while B's window is open.
+
 ### `d +6% (3.2d)`: daily pacing
 
 The weekly limit is your real budget. Spend it evenly and you "earn" one-seventh (~14.3%) of it per day. The `d` segment compares where you *should* be (by elapsed time) against where you *are* (`wk`):
@@ -90,7 +92,7 @@ If you rotate between several Claude subscriptions, one account's seven-day wind
 Accounts are labelled `A`, `B`, `C` in the order they were first seen. The UUID stays in the filename and is never displayed.
 
 ```
-5h A 87% (0h12m) B free | wk A 24% (5.1d) B 78% (0.9d) | rw 1.8d @83/d | -> B
+5h A 87% (0h12m) B 40% | wk A 24% (5.1d) B 78% (0.9d) | rw 1.8d @83/d | -> B
 ```
 
 **Numbers land on the account they came from, not on the one you're logged into.** `/login` is global, but the limits in a session's payload come from that session's last reply, so sessions that were open before you switched keep reporting the old account. The status line tells them apart by the weekly `resets_at`, which is a different moment for every account. A reading that matches no known window and can't be a new window of the logged-in account is dropped rather than filed under the wrong name. Within one window usage never goes down, so a lower reading than the stored one is an older reply and is ignored as well.
