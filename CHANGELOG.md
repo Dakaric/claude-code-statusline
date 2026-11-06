@@ -2,6 +2,12 @@
 
 What changed in each release, in plain words. Newest first.
 
+## 1.6.2 - 2026-11-06
+
+### Changed
+
+- **No more `5h free`.** The 5-hour segment only appears while a five-hour window is running. Plans without a five-hour limit report only the weekly one, but the account snapshot kept their last five-hour window, so the line read `5h free` for good. An expired window limits nothing, so it is now left out, for your own account and for the others alike. The line starts with `wk` and gains the room.
+
 ## 1.6.1 - 2026-10-07
 
 ### Changed

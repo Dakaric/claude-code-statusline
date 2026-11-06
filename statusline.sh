@@ -4,7 +4,7 @@
 
 # Single Source of Truth für die Version. Der Release-Workflow prüft, dass der
 # gepushte Tag (v<X>) exakt hierzu passt -> kein Drift zwischen Tag und Skript.
-VERSION="1.6.1"
+VERSION="1.6.2"
 
 # --version / -v / version: nur ausgeben und raus, bevor von stdin gelesen wird.
 # Im Normalbetrieb ruft Claude Code das Skript ohne Argumente auf ($1 leer).
@@ -214,7 +214,8 @@ fi
 # entfernt es dann aus dem Payload, und das naechste startet erst mit dem naechsten
 # Prompt in diesem Account. Seine Restlaufzeit wk_days ist dann volle sieben Tage.
 #
-# others: 5h-Stand der uebrigen Accounts, "free", wenn ihr Fenster durch ist.
+# others: 5h-Stand der uebrigen Accounts mit laufendem Fenster. Ein abgelaufenes begrenzt
+# nichts und faellt weg, ebenso bei Abos ohne 5h-Limit, deren Snapshot ein altes traegt.
 # rest/need: Runway, siehe Segment 5a2. switch_to: Wechselsignal, siehe Segment 5a3.
 # wk_all: Wochenstand samt Restlaufzeit je Account, die fremden Eintraege in \001 und
 # \002 gefasst (Segment 5b blendet sie ab; ohne bekannten eigenen Account bleibt alles
@@ -260,8 +261,7 @@ IFS="$FIELD_SEP" read -r acct_n acct_lbl others rest need switch_to wk_all hist_
      | sort_by(-.decay) | first) as $target
   | [ ($accts | length),
       ($me.lbl // ""),
-      ($others | map("\(.lbl) " + (if .fh_reset <= $now then "free" else "\(.fh_used)%" end))
-       | join(" ")),
+      ($others | map(select(.fh_reset > $now) | "\(.lbl) \(.fh_used)%") | join(" ")),
       $runway.cum,
       $runway.need,
       ($target.lbl // ""),
@@ -279,18 +279,15 @@ acct_n="${acct_n:-0}"
 
 # Claude Code nimmt ein abgelaufenes 5h-Fenster aus dem Payload und meldet das neue erst
 # mit der naechsten Antwort dieser Session. Bis dahin gilt der Snapshot, den andere
-# Sessions desselben Accounts schon aktualisiert haben; ist auch dort das Fenster vorbei,
-# ist es frei. Ohne Wochenwert hat der Payload gar keine Limits, dann bleibt es leer.
-# Ohne Besitzer gehoert der Wochenwert einem anderen Account als dem Snapshot, dann
-# bleibt es ebenfalls leer.
-five_h_free=0
-if [ -z "$five_h" ] && [ -n "$weekly" ] && [ -n "$acct_owner" ] && [ -n "$my_fh_reset" ]; then
-  if [ "${my_fh_reset%%.*}" -gt "$NOW" ]; then
-    five_h="$my_fh_used"
-    five_h_reset="$my_fh_reset"
-  else
-    five_h_free=1
-  fi
+# Sessions desselben Accounts schon aktualisiert haben. Ist auch dort das Fenster vorbei,
+# begrenzt es nichts, und das Segment entfaellt: Abos ohne 5h-Limit melden nur noch das
+# Wochenfenster, ihr Snapshot traegt aber das letzte 5h-Fenster dauerhaft weiter.
+# Ohne Wochenwert hat der Payload gar keine Limits, ohne Besitzer gehoert der Wochenwert
+# einem anderen Account als dem Snapshot. In beiden Faellen bleibt es ebenfalls leer.
+if [ -z "$five_h" ] && [ -n "$weekly" ] && [ -n "$acct_owner" ] && [ -n "$my_fh_reset" ] \
+  && [ "${my_fh_reset%%.*}" -gt "$NOW" ]; then
+  five_h="$my_fh_used"
+  five_h_reset="$my_fh_reset"
 fi
 
 # Liest t, u und r der letzten Historienzeile ohne eigenen Prozess. Die Zeilen schreibt
@@ -578,13 +575,7 @@ fi
 
 # --- Segment 5: 5h-Rate-Limit (immer wenn vorhanden) ---
 seg_rate=""
-if [ "$five_h_free" = 1 ]; then
-  seg_rate="${C_CTX_OK}5h free${RESET}"
-  if [ "$acct_n" -ge 2 ]; then
-    seg_rate="${C_CTX_OK}5h ${acct_lbl} free${RESET}"
-    [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
-  fi
-elif [ -n "$five_h" ]; then
+if [ -n "$five_h" ]; then
   pct_color col "$five_h"
   # Restzeit bis Reset in Klammern: "1h58m" bzw. "<1h -> 42m"
   cd=""
@@ -598,8 +589,8 @@ elif [ -n "$five_h" ]; then
     fi
   fi
   seg_rate="${col}5h ${five_h}%${cd}${RESET}"
-  # Ab zwei Accounts bekommt der aktive seinen Buchstaben, die uebrigen haengen dahinter:
-  # "frei", wenn ihr 5h-Fenster durch ist, sonst ihr letzter bekannter Stand.
+  # Ab zwei Accounts bekommt der aktive seinen Buchstaben, die uebrigen mit laufendem
+  # 5h-Fenster haengen mit ihrem letzten bekannten Stand dahinter.
   if [ "$acct_n" -ge 2 ]; then
     seg_rate="${col}5h ${acct_lbl} ${five_h}%${cd}${RESET}"
     [ -n "$others" ] && seg_rate="${seg_rate} ${C_SEP}${others}${RESET}"
